@@ -9,7 +9,7 @@ give you.
 | Xray-core | the network core (inside libv2ray) | MPL-2.0 | <https://github.com/XTLS/Xray-core> |
 | AndroidLibXrayLite (libv2ray) | Xray-core packaged for Android, downloaded at build time | LGPL-3.0 | <https://github.com/2dust/AndroidLibXrayLite> |
 | Routing lists (`app/src/main/assets/geoip.dat`, `geosite.dat`) | categories of sites and addresses, trimmed copies | GPL-3.0 | the sources named in `app/src/main/assets/regions.json` |
-| PT Serif, PT Sans | fonts | SIL Open Font License 1.1 ([FONT-LICENSE.txt](FONT-LICENSE.txt)) | ParaType |
+| PT Serif, PT Sans | fonts | SIL Open Font License 1.1 ([docs/licenses/OFL-1.1.txt](docs/licenses/OFL-1.1.txt)) | ParaType |
 | Flag images | country flags | public domain | <https://flagcdn.com> |
 | ZXing, zxing-android-embedded | QR codes | Apache-2.0 | <https://github.com/zxing/zxing>, <https://github.com/journeyapps/zxing-android-embedded> |
 | AndroidX, Jetpack Compose, Kotlin, kotlinx libraries | the app framework | Apache-2.0 | <https://developer.android.com/jetpack>, <https://kotlinlang.org> |
