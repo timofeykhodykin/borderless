@@ -1,0 +1,475 @@
+{
+ "comment": "Recognising a server's country from its name (data/Countries.kt), for its flag and country label: extra names and cities per ISO code, the languages whose country names are matched besides the app's own, words that look like a country but rarely mean one, and codes written differently.",
+ "nameLanguages": [
+  "en",
+  "ru"
+ ],
+ "aliases": {
+  "US": [
+   "usa",
+   "сша",
+   "америка",
+   "united states",
+   "new york",
+   "нью-йорк",
+   "los angeles",
+   "лос-анджелес",
+   "chicago",
+   "чикаго",
+   "dallas",
+   "даллас",
+   "miami",
+   "майами",
+   "seattle",
+   "сиэтл",
+   "san jose",
+   "сан-хосе",
+   "ashburn",
+   "атланта",
+   "atlanta",
+   "silicon valley",
+   "kansas city"
+  ],
+  "GB": [
+   "uk",
+   "britain",
+   "великобритания",
+   "англия",
+   "england",
+   "london",
+   "лондон",
+   "manchester",
+   "манчестер"
+  ],
+  "DE": [
+   "germany",
+   "германия",
+   "frankfurt",
+   "франкфурт",
+   "франкфурт-на-майне",
+   "berlin",
+   "берлин",
+   "munich",
+   "мюнхен",
+   "nuremberg",
+   "нюрнберг",
+   "falkenstein",
+   "фалькенштайн",
+   "düsseldorf",
+   "дюссельдорф",
+   "hamburg",
+   "гамбург"
+  ],
+  "NL": [
+   "netherlands",
+   "holland",
+   "нидерланды",
+   "голландия",
+   "amsterdam",
+   "амстердам",
+   "rotterdam",
+   "роттердам"
+  ],
+  "FI": [
+   "finland",
+   "финляндия",
+   "helsinki",
+   "хельсинки",
+   "oulu",
+   "оулу"
+  ],
+  "SE": [
+   "sweden",
+   "швеция",
+   "stockholm",
+   "стокгольм"
+  ],
+  "NO": [
+   "norway",
+   "норвегия",
+   "oslo",
+   "осло"
+  ],
+  "FR": [
+   "france",
+   "франция",
+   "paris",
+   "париж",
+   "marseille",
+   "марсель"
+  ],
+  "PL": [
+   "poland",
+   "польша",
+   "warsaw",
+   "варшава"
+  ],
+  "LV": [
+   "latvia",
+   "латвия",
+   "riga",
+   "рига"
+  ],
+  "LT": [
+   "lithuania",
+   "литва",
+   "vilnius",
+   "вильнюс"
+  ],
+  "EE": [
+   "estonia",
+   "эстония",
+   "tallinn",
+   "таллин"
+  ],
+  "TR": [
+   "turkey",
+   "türkiye",
+   "турция",
+   "istanbul",
+   "стамбул",
+   "ankara",
+   "анкара"
+  ],
+  "KZ": [
+   "kazakhstan",
+   "казахстан",
+   "almaty",
+   "алматы",
+   "astana",
+   "астана"
+  ],
+  "RU": [
+   "russia",
+   "россия",
+   "рф",
+   "moscow",
+   "москва",
+   "msk",
+   "мск",
+   "saint petersburg",
+   "санкт-петербург",
+   "спб"
+  ],
+  "AE": [
+   "uae",
+   "оаэ",
+   "emirates",
+   "dubai",
+   "дубай",
+   "фуджейра",
+   "fujairah"
+  ],
+  "JP": [
+   "japan",
+   "япония",
+   "tokyo",
+   "токио",
+   "osaka",
+   "осака"
+  ],
+  "SG": [
+   "singapore",
+   "сингапур"
+  ],
+  "HK": [
+   "hong kong",
+   "hongkong",
+   "гонконг"
+  ],
+  "KR": [
+   "korea",
+   "south korea",
+   "корея",
+   "южная корея",
+   "seoul",
+   "сеул"
+  ],
+  "CH": [
+   "switzerland",
+   "швейцария",
+   "zurich",
+   "цюрих"
+  ],
+  "AT": [
+   "austria",
+   "австрия",
+   "vienna",
+   "вена"
+  ],
+  "CZ": [
+   "czechia",
+   "czech",
+   "чехия",
+   "prague",
+   "прага"
+  ],
+  "IT": [
+   "italy",
+   "италия",
+   "milan",
+   "милан",
+   "rome",
+   "рим"
+  ],
+  "ES": [
+   "spain",
+   "испания",
+   "madrid",
+   "мадрид",
+   "barcelona",
+   "барселона"
+  ],
+  "PT": [
+   "portugal",
+   "португалия",
+   "lisbon",
+   "лиссабон"
+  ],
+  "BG": [
+   "bulgaria",
+   "болгария",
+   "sofia",
+   "софия"
+  ],
+  "RO": [
+   "romania",
+   "румыния",
+   "bucharest",
+   "бухарест"
+  ],
+  "HU": [
+   "hungary",
+   "венгрия",
+   "budapest",
+   "будапешт"
+  ],
+  "SK": [
+   "slovakia",
+   "словакия",
+   "bratislava",
+   "братислава"
+  ],
+  "RS": [
+   "serbia",
+   "сербия",
+   "belgrade",
+   "белград"
+  ],
+  "HR": [
+   "croatia",
+   "хорватия",
+   "zagreb",
+   "загреб"
+  ],
+  "GR": [
+   "greece",
+   "греция",
+   "athens",
+   "афины"
+  ],
+  "IE": [
+   "ireland",
+   "ирландия",
+   "dublin",
+   "дублин"
+  ],
+  "BE": [
+   "belgium",
+   "бельгия",
+   "brussels",
+   "брюссель"
+  ],
+  "DK": [
+   "denmark",
+   "дания",
+   "copenhagen",
+   "копенгаген"
+  ],
+  "CA": [
+   "canada",
+   "канада",
+   "toronto",
+   "торонто",
+   "montreal",
+   "монреаль",
+   "vancouver",
+   "ванкувер"
+  ],
+  "AU": [
+   "australia",
+   "австралия",
+   "sydney",
+   "сидней",
+   "melbourne",
+   "мельбурн"
+  ],
+  "BR": [
+   "brazil",
+   "бразилия",
+   "sao paulo",
+   "são paulo",
+   "сан-паулу"
+  ],
+  "AR": [
+   "argentina",
+   "аргентина",
+   "buenos aires",
+   "буэнос-айрес"
+  ],
+  "MX": [
+   "mexico",
+   "мексика",
+   "керетаро",
+   "queretaro"
+  ],
+  "CO": [
+   "colombia",
+   "колумбия",
+   "bogota",
+   "богота"
+  ],
+  "PE": [
+   "peru",
+   "перу",
+   "lima",
+   "лима"
+  ],
+  "IN": [
+   "india",
+   "индия",
+   "mumbai",
+   "мумбаи"
+  ],
+  "MY": [
+   "malaysia",
+   "малайзия",
+   "kuala lumpur",
+   "куала-лумпур"
+  ],
+  "IL": [
+   "israel",
+   "израиль",
+   "tel aviv",
+   "тель-авив"
+  ],
+  "GE": [
+   "georgia",
+   "грузия",
+   "tbilisi",
+   "тбилиси"
+  ],
+  "AM": [
+   "armenia",
+   "армения",
+   "yerevan",
+   "ереван"
+  ],
+  "MD": [
+   "moldova",
+   "молдова",
+   "молдавия",
+   "chisinau",
+   "кишинев",
+   "кишинёв"
+  ],
+  "UA": [
+   "ukraine",
+   "украина",
+   "kyiv",
+   "kiev",
+   "киев"
+  ],
+  "BY": [
+   "belarus",
+   "беларусь",
+   "белоруссия",
+   "minsk",
+   "минск"
+  ],
+  "ZA": [
+   "south africa",
+   "юар",
+   "johannesburg",
+   "йоханнесбург"
+  ],
+  "CY": [
+   "cyprus",
+   "кипр",
+   "limassol",
+   "лимассол"
+  ],
+  "LU": [
+   "luxembourg",
+   "люксембург"
+  ],
+  "IS": [
+   "iceland",
+   "исландия",
+   "reykjavik",
+   "рейкьявик"
+  ],
+  "VN": [
+   "vietnam",
+   "вьетнам"
+  ],
+  "TH": [
+   "thailand",
+   "таиланд",
+   "bangkok",
+   "бангкок"
+  ],
+  "ID": [
+   "indonesia",
+   "индонезия",
+   "jakarta",
+   "джакарта"
+  ],
+  "CN": [
+   "china",
+   "китай"
+  ],
+  "TW": [
+   "taiwan",
+   "тайвань"
+  ]
+ },
+ "stopWords": [
+  "того",
+  "togo",
+  "chad",
+  "чад",
+  "jersey",
+  "джерси",
+  "guernsey"
+ ],
+ "ambiguousCodes": [
+  "TV",
+  "IP",
+  "ID",
+  "IT",
+  "AI",
+  "TO",
+  "BY",
+  "AS",
+  "IS",
+  "IN",
+  "ME",
+  "NO",
+  "SO",
+  "TG",
+  "TM",
+  "WS",
+  "GG",
+  "BE",
+  "AM",
+  "AT",
+  "CO",
+  "OR",
+  "MY",
+  "PE"
+ ],
+ "codeAliases": {
+  "UK": "GB"
+ }
+}

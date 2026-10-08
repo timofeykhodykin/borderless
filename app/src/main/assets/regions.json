@@ -1,0 +1,234 @@
+{
+  "comment": "Regional routing lists (see data/Regions.kt). A region is named by its domain zone. Categories have local names (e.g. geosite:ru-1); under geo each maps to the hash of its name at the source, which scripts/build_geo.py and the app's updates use to find it (SHA-256 of the upper-case name, first 16 hex digits). Apps are recognised by hashed package names and name fragments (length:hash). Categories under notBundled are not shipped: the app downloads them when the zone is on, from the source or its mirrors.",
+  "common": {
+    "source": "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/",
+    "geoip": {
+      "private": "7109ec0807d8f2bd"
+    },
+    "geosite": {
+      "private": "7109ec0807d8f2bd",
+      "category-ads-all": "9b8f71bf3b203be2"
+    },
+    "mirrors": [
+      "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/"
+    ]
+  },
+  "regions": [
+    {
+      "code": "ru",
+      "zones": [
+        ".ru",
+        ".su",
+        ".рф"
+      ],
+      "directDomains": [
+        "geosite:ru-2",
+        "geosite:ru-3",
+        "geosite:ru-1",
+        "geosite:ru-4",
+        "geosite:ru-5",
+        "geosite:ru-6",
+        "geosite:ru-7",
+        "geosite:ru-8",
+        "geosite:ru-9",
+        "geosite:ru-10",
+        "geosite:ru-11",
+        "geosite:ru-12",
+        "geosite:ru-13",
+        "geosite:ru-14",
+        "geosite:ru-15",
+        "geosite:ru-16",
+        "geosite:ru-17",
+        "geosite:ru-18",
+        "geosite:ru-19",
+        "geosite:ru-20",
+        "domain:ru",
+        "domain:su",
+        "domain:xn--p1ai"
+      ],
+      "directIps": [
+        "geoip:ru"
+      ],
+      "serverDomains": [
+        "geosite:ru-s1"
+      ],
+      "serverIps": [
+        "geoip:ru-s1",
+        "geoip:ru-s2",
+        "geoip:ru-s3"
+      ],
+      "dns": [
+        "77.88.8.8",
+        "77.88.8.1"
+      ],
+      "checkUrls": [
+        "https://ya.ru",
+        "https://vk.com"
+      ],
+      "apps": {
+        "packages": [
+          "054d31ed9d54e123",
+          "07dd33c202b88b65",
+          "08ca31e60303b08a",
+          "090fe8367c0e1a91",
+          "0973ef1f41785847",
+          "098f42bb0f28f7e3",
+          "0a40cb2662b567c7",
+          "0aa3a14e9cb6ae1c",
+          "0b80c62b048844cc",
+          "0c94c46411ea9676",
+          "0e929e43f2a43866",
+          "0f610135691eb7e1",
+          "0fa72bdafb7de12c",
+          "10e65c6896fab21d",
+          "11915679bb426476",
+          "1a1a27edb0933e96",
+          "1d071e094c0ef471",
+          "1e2b7cc1459da1fd",
+          "1fab1347c5208df0",
+          "207e0149f8ad8548",
+          "2178e23f8320632f",
+          "24890bc692fa27a1",
+          "2875d095e6679ede",
+          "2a87964f4c6834cd",
+          "2cb6637a453a6132",
+          "3726a8877194bed3",
+          "38215a40caf13a17",
+          "3ecfd742f2935215",
+          "47c4727bc66a743c",
+          "4af842c45b650541",
+          "4bbf8a566790d065",
+          "4e9b5280e9f7f774",
+          "507b6775782e4c39",
+          "50a15fb6f561c345",
+          "519556f82a782770",
+          "57b4a63f88408405",
+          "6118afd3ef30fa92",
+          "679f8b068295148b",
+          "6af5694647af2c44",
+          "6b3f4ceb428bff84",
+          "7391a2e5b42778fa",
+          "7befcf6b41389252",
+          "844ec39eb39285c2",
+          "84fbd63d9dbe06e8",
+          "850642316ec4c193",
+          "89e0fb028ec2044d",
+          "8a922e9e9173a498",
+          "8dbd4a7a8b30a207",
+          "908a92ac766f4839",
+          "90984ce4779d4367",
+          "91b5216f5f42935d",
+          "92fe2ae8d24a692c",
+          "939939dcfa652c38",
+          "979da864b00fa2e2",
+          "9e588b832b329edf",
+          "9ee93d7db7b10471",
+          "a2dcdf02b59c6fef",
+          "a4ff8b13c591b5ea",
+          "a50173bc209457ed",
+          "ab2756285c4399b6",
+          "b1ddc6a55b913d02",
+          "b2e8b6aa62d9cd41",
+          "b3d0854d3ed845f4",
+          "bbbf7cd219dfabb5",
+          "c30134441b96e394",
+          "c5ffd32b0eed986f",
+          "c982e03e2e17f23f",
+          "cb32b953ca0c1aea",
+          "d65c0dc4b2cd9ed3",
+          "d80d214546434289",
+          "df29c8e8832be001",
+          "e15303980efdf5f1",
+          "e41bd0634dce6def",
+          "e9f06fc9a432b82c",
+          "ec41abff10dd5664",
+          "f0c5036d562fc2f3",
+          "f46823fb7c490321",
+          "f4f275e67486dce9",
+          "f94192c8cceb2f3a",
+          "fa8c447346a80b5a",
+          "fd02b69dd2e60e94"
+        ],
+        "prefixes": [
+          "ru."
+        ],
+        "suffixes": [
+          ".ru"
+        ],
+        "markers": [
+          "10:c1314942e363ed74",
+          "11:064605930cef3661",
+          "11:0bea4cc1674d371f",
+          "11:63e70505ef89dcbb",
+          "3:79d2d0917e33551a",
+          "4:00d8c3437ed584fd",
+          "4:4199648a2a1ebbd3",
+          "4:781d2352970fd875",
+          "4:b7069afa31e2fdbf",
+          "5:9988b3df166403d6",
+          "5:b7192642f535d403",
+          "5:c476b776e0a57be2",
+          "5:cc64477675542434",
+          "6:0486f727a786e7bd",
+          "6:22d4cf0e0a8f9eac",
+          "6:2ea6f7269f43a868",
+          "6:5ec9c2c2913538bb",
+          "6:7192d9e01ae01684",
+          "6:dd4624ef57cdbf48",
+          "7:236defd502f38392",
+          "7:4dff0516dc0a089c",
+          "7:a448acb115976cda",
+          "7:c3bf1eb1c4480562",
+          "7:c8fc162b57d43790",
+          "7:cf33cf99092f5bd7",
+          "7:fd648811be25e251",
+          "8:cd8a31ec457ea69f",
+          "8:fcb3be9eababd456",
+          "9:32ec2527e4adbe5f",
+          "9:cf257e549f739ff3",
+          "9:de689e0552651100"
+        ]
+      },
+      "geo": {
+        "source": "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/",
+        "geoip": {
+          "ru": "f37e3358243de943",
+          "ru-s1": "ed0a53bc60fb8f1d",
+          "ru-s2": "ca4fb4af4a86f149",
+          "ru-s3": "e172ac5ab9a7c182"
+        },
+        "notBundled": [
+          "ru-s1",
+          "ru-s2",
+          "ru-s3"
+        ],
+        "geosite": {
+          "ru-s1": "ed0a53bc60fb8f1d",
+          "ru-1": "ed87de917b18f2fa",
+          "ru-2": "5d9b214795624b0e",
+          "ru-3": "51178eb77926ee9e",
+          "ru-4": "4aa62b21e382cd96",
+          "ru-5": "292ba80abcf9578d",
+          "ru-6": "f7ebc9c8626f2bb9",
+          "ru-7": "4bd28bc740360bc8",
+          "ru-8": "afbd55b36eb30893",
+          "ru-9": "746e01950ce354eb",
+          "ru-10": "0c95e46a22dcdca0",
+          "ru-11": "2d12e8b168fcd480",
+          "ru-12": "9ba2ebecea7d6750",
+          "ru-13": "821710dc3e41d3dd",
+          "ru-14": "7f607b65bde0b72e",
+          "ru-15": "e157d0561cbae946",
+          "ru-16": "c1085325d225ba12",
+          "ru-17": "115c60f182b1a5e2",
+          "ru-18": "e64320622579d32a",
+          "ru-19": "c74380fcbf1fc36a",
+          "ru-20": "e84caa2a89f3b0d0"
+        },
+        "mirrors": [
+          "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/"
+        ]
+      }
+    }
+  ]
+}

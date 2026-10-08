@@ -1,0 +1,18 @@
+.gradle/
+.kotlin/
+build/
+/local.properties
+/app/libs/*.aar
+/app/release/
+*.iml
+.idea/
+.DS_Store
+/keystore.properties
+*.jks
+*.keystore
+/dist/
+__pycache__/
+
+# Local only: notes for the assistant and work in progress (never published)
+CLAUDE.md
+/local/

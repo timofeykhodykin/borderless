@@ -1,0 +1,1 @@
+{"strategy":"FAILOVER","autoActive":true,"genericNames":true,"palette":"mono","statusIcon":true,"ecoOn":true,"ecoBySaver":true,"saverSeen":true,"strategyBeforeEco":"STABLE","healthIntervalSec":30,"appsDirect":["com.example.app"],"appsTunnel":["com.example.other"],"deviceId":"0123456789abcdef","lastServerId":"s1","statsDays":90}
