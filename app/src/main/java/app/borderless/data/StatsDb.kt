@@ -9,8 +9,8 @@ import app.borderless.R
 
 import android.content.ContentValues
 import android.content.Context
-import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
+import net.zetetic.database.sqlcipher.SQLiteDatabase
+import net.zetetic.database.sqlcipher.SQLiteOpenHelper
 import app.borderless.core.Phase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,27 +31,44 @@ object StatsDb {
     enum class Kind { PROBE, HEALTH }
 
     /** Why the engine changed (or tried to change) the server. */
-    enum class Event { LOST, INITIAL, FAILOVER, OPTIMIZE, MANUAL, RETRY, BEST }
+    /** RECONNECT (2026-10-16): the same server, a fresh core — it answered a probe while the core's connection hung. */
+    enum class Event { LOST, INITIAL, FAILOVER, OPTIMIZE, MANUAL, RETRY, BEST, RECONNECT }
 
     /** Schema version of the first public release; raise it with every additive change (see Helper.onUpgrade). */
-    private const val VERSION = 1
+    private const val VERSION = 4
 
     /** Phase rows are repeated this often while the tunnel runs, so a killed process does not inflate durations. */
     const val HEARTBEAT_MS = 5 * 60_000L
+
+    /**
+     * This process, written with every phase row (v3): a silence between two rows of the same process means the
+     * phone slept (heartbeats are late in deep sleep), not that the tunnel was gone.
+     */
+    private val process = System.currentTimeMillis()
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val writer = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1) + Errors.handler)
     private lateinit var helper: Helper
 
-    private class Helper(context: Context) : SQLiteOpenHelper(context, "stats.db", null, VERSION) {
+    /**
+     * Encrypted with SQLCipher (SECURITY.md S16): the history of when the tunnel ran, through which servers, on which
+     * networks is the user's own business. [password] = a raw key derived from the app's data key ([dbKey]); empty
+     * (an unencrypted database) only when the phone has no Keystore at all.
+     */
+    private class Helper(context: Context, password: ByteArray) :
+        SQLiteOpenHelper(context, NAME, password, null, VERSION, 0, null, null, true) {
         override fun onCreate(db: SQLiteDatabase) {
-            db.execSQL("CREATE TABLE samples (ts INTEGER NOT NULL, server TEXT NOT NULL, ms INTEGER, kind INTEGER NOT NULL)")
+            // took: how long a health check took in all (v4; null for probes and older rows).
+            db.execSQL("CREATE TABLE samples (ts INTEGER NOT NULL, server TEXT NOT NULL, ms INTEGER, kind INTEGER NOT NULL, took INTEGER)")
             db.execSQL("CREATE INDEX samples_server_ts ON samples(server, ts)")
             db.execSQL("CREATE INDEX samples_ts ON samples(ts)")
-            db.execSQL("CREATE TABLE phases (ts INTEGER NOT NULL, phase TEXT NOT NULL, server TEXT)")
+            // run: the process that wrote the row (v3, see [process]).
+            db.execSQL("CREATE TABLE phases (ts INTEGER NOT NULL, phase TEXT NOT NULL, server TEXT, run INTEGER)")
             db.execSQL("CREATE INDEX phases_ts ON phases(ts)")
-            db.execSQL("CREATE TABLE events (ts INTEGER NOT NULL, type TEXT NOT NULL, server TEXT, from_server TEXT)")
+            // pos / pos_of: where the chosen server stood in the check order of the scan that found it (v2).
+            db.execSQL("CREATE TABLE events (ts INTEGER NOT NULL, type TEXT NOT NULL, server TEXT, from_server TEXT, pos INTEGER, pos_of INTEGER)")
             db.execSQL("CREATE INDEX events_ts ON events(ts)")
+            createV4(db)
             // A scan: how many of the checked servers answered, all servers the user had, why it ran.
             db.execSQL("CREATE TABLE scans (ts INTEGER NOT NULL, available INTEGER NOT NULL, total INTEGER NOT NULL, best INTEGER, servers INTEGER, reason TEXT)")
             // Traffic since the previous row; the proxied part counted for the server that carried it.
@@ -87,11 +104,42 @@ object StatsDb {
          * Future schema changes go here as additive steps (`if (oldVersion < N)`: new tables / columns with defaults),
          * never dropping or renaming what a released version wrote.
          */
-        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+            // 2: the chosen server's place in the check order (null for events written before).
+            if (oldVersion < 2) {
+                db.execSQL("ALTER TABLE events ADD COLUMN pos INTEGER")
+                db.execSQL("ALTER TABLE events ADD COLUMN pos_of INTEGER")
+            }
+            // 3: the process that wrote a phase row (null for rows written before).
+            if (oldVersion < 3) db.execSQL("ALTER TABLE phases ADD COLUMN run INTEGER")
+            // 4: what a loss looked like, connection cuts, health check durations.
+            if (oldVersion < 4) {
+                db.execSQL("ALTER TABLE samples ADD COLUMN took INTEGER")
+                createV4(db)
+            }
+        }
+
+        /**
+         * v4. LOST events get: how long the connection had lived, the network kind (wifi / cell / ethernet / other),
+         * metered, made in a limited network, proxy bytes up / down in the last minute. `cuts`: every interruption of
+         * a working connection — from its first sign (stall, suspicion, failed check) or the planned core restart to
+         * the next answered check (end_ts null: the tunnel stopped first) — with its cause, screen, network, server
+         * and the last minute's proxy bytes.
+         */
+        private fun createV4(db: SQLiteDatabase) {
+            for (c in listOf("lifetime_ms INTEGER", "net TEXT", "metered INTEGER", "limited INTEGER", "up60 INTEGER", "down60 INTEGER")) {
+                db.execSQL("ALTER TABLE events ADD COLUMN $c")
+            }
+            db.execSQL(
+                "CREATE TABLE cuts (ts INTEGER NOT NULL, end_ts INTEGER, cause TEXT NOT NULL, screen INTEGER, net TEXT, " +
+                    "server TEXT, up60 INTEGER, down60 INTEGER)",
+            )
+            db.execSQL("CREATE INDEX cuts_ts ON cuts(ts)")
+        }
 
         /** A database of an unknown schema (a pre-release build, or a newer version rolled back): start it over. */
         override fun onDowngrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            db.rawQuery("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'android_metadata'", null).use { c ->
+            db.rawQuery("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'android_metadata'", emptyArray<String>()).use { c ->
                 buildList { while (c.moveToNext()) add(c.getString(0)) }
             }.forEach { db.execSQL("DROP TABLE IF EXISTS \"$it\"") }
             onCreate(db)
@@ -105,8 +153,57 @@ object StatsDb {
 
     fun init(context: Context) {
         if (::helper.isInitialized) return
-        helper = Helper(context.applicationContext).apply { setWriteAheadLoggingEnabled(true) }
+        // Sealed data whose key can't be opened now: the database (sealed by a key from it) waits too.
+        if (Crypto.locked) return
+        System.loadLibrary("sqlcipher")
+        val app = context.applicationContext
+        val key = Crypto.key?.let(::dbKey) ?: ByteArray(0)
+        // Versions up to 1.0 kept it unencrypted: encrypted once, in place; if that fails it stays as it was.
+        val password = if (key.isNotEmpty() && isPlain(app.getDatabasePath(NAME)) && !encrypt(app.getDatabasePath(NAME), key)) ByteArray(0) else key
+        helper = Helper(app, password)
         writer.launch { writeLoop() }
+    }
+
+    private const val NAME = "stats.db"
+
+    /** The database's raw key (`x'…'`: no slow passphrase derivation): HMAC-SHA256 of its name under the data key. */
+    private fun dbKey(dataKey: javax.crypto.SecretKey): ByteArray {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256").apply { init(javax.crypto.spec.SecretKeySpec(dataKey.encoded, "HmacSHA256")) }
+        val hex = mac.doFinal("stats-db".toByteArray()).joinToString("") { "%02x".format(it) }
+        return "x'$hex'".toByteArray()
+    }
+
+    /** An unencrypted SQLite file (its plain header), as older versions wrote it. */
+    private fun isPlain(file: java.io.File): Boolean = file.isFile && file.length() >= 16 &&
+        file.inputStream().use { ByteArray(16).also { b -> it.read(b) } }.contentEquals("SQLite format 3\u0000".toByteArray())
+
+    /** Copies the unencrypted [file] into an encrypted one (`sqlcipher_export`) and puts it in its place. */
+    private fun encrypt(file: java.io.File, key: ByteArray): Boolean {
+        val tmp = java.io.File(file.path + ".enc")
+        return try {
+            tmp.delete()
+            // CREATE: ATTACH opens the new file with the main database's flags.
+            val db = SQLiteDatabase.openDatabase(file.path, ByteArray(0), null, SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.CREATE_IF_NECESSARY, null, null)
+            try {
+                db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", emptyArray<String>()).use { it.moveToFirst() }
+                val version = db.version
+                // Bound, not written into the statement: SQLite logs a failing statement's text (with the key).
+                db.execSQL("ATTACH DATABASE ? AS enc KEY ?", arrayOf<Any>(tmp.path, String(key)))
+                db.rawQuery("SELECT sqlcipher_export('enc')", emptyArray<String>()).use { it.moveToFirst() }
+                db.execSQL("PRAGMA enc.user_version = $version")
+                db.execSQL("DETACH DATABASE enc")
+            } finally {
+                db.close()
+            }
+            for (suffix in listOf("", "-wal", "-shm", "-journal")) java.io.File(file.path + suffix).delete()
+            check(tmp.renameTo(file)) { "cannot replace the database" }
+            AppLog.debug("Stats", "statistics database encrypted (${file.length() / 1024} KB)")
+            true
+        } catch (e: Exception) {
+            tmp.delete()
+            Errors.report(e, "encrypting the statistics database", show = false)
+            false
+        }
     }
 
     @Volatile
@@ -189,19 +286,39 @@ object StatsDb {
 
     // ------------------------------------------------------------------ recording
 
-    fun sample(server: String, ms: Int?, kind: Kind, ts: Long = System.currentTimeMillis()) = write {
+    fun sample(server: String, ms: Int?, kind: Kind, ts: Long = System.currentTimeMillis(), took: Int? = null) = write {
         insert("samples", null, ContentValues().apply {
             put("ts", ts); put("server", server); put("kind", kind.ordinal)
             if (ms != null) put("ms", ms) else putNull("ms")
+            took?.let { put("took", it) }
+        })
+    }
+
+    /** What a LOST event records about the connection that was lost (v4). */
+    data class Loss(val lifetimeMs: Long, val net: String?, val metered: Boolean, val limited: Boolean, val up60: Long, val down60: Long)
+
+    /** An interruption of a working connection (v4, see [Helper.createV4]); [end] null: the tunnel stopped first. */
+    fun cut(start: Long, end: Long?, cause: String, screen: Boolean, net: String?, server: String?, up60: Long, down60: Long) = write {
+        insert("cuts", null, ContentValues().apply {
+            put("ts", start); end?.let { put("end_ts", it) }; put("cause", cause); put("screen", if (screen) 1 else 0)
+            put("net", net); put("server", server); put("up60", up60); put("down60", down60)
         })
     }
 
     fun phase(phase: Phase, server: String?, ts: Long = System.currentTimeMillis()) = write {
-        insert("phases", null, ContentValues().apply { put("ts", ts); put("phase", phase.name); put("server", server) })
+        insert("phases", null, ContentValues().apply { put("ts", ts); put("phase", phase.name); put("server", server); put("run", process) })
     }
 
-    fun event(type: Event, server: String?, from: String? = null, ts: Long = System.currentTimeMillis()) = write {
-        insert("events", null, ContentValues().apply { put("ts", ts); put("type", type.name); put("server", server); put("from_server", from) })
+    /** [pos]: the chosen server's place (1-based) in the check order of the scan that found it, of [pos].second servers. */
+    fun event(type: Event, server: String?, from: String? = null, ts: Long = System.currentTimeMillis(), pos: Pair<Int, Int>? = null, loss: Loss? = null) = write {
+        insert("events", null, ContentValues().apply {
+            put("ts", ts); put("type", type.name); put("server", server); put("from_server", from)
+            pos?.let { put("pos", it.first); put("pos_of", it.second) }
+            loss?.let {
+                put("lifetime_ms", it.lifetimeMs); put("net", it.net); put("metered", if (it.metered) 1 else 0)
+                put("limited", if (it.limited) 1 else 0); put("up60", it.up60); put("down60", it.down60)
+            }
+        })
     }
 
     /** A scan: [available] of [total] checked servers answered; [servers] = all the user has; [reason] = Activity kind. */
@@ -299,8 +416,14 @@ object StatsDb {
     }
 
     suspend fun coreCostByClass(from: Long, to: Long): Map<String, ProtocolCost.Measured> = read(emptyMap()) {
-        rawQuery("SELECT class, SUM(bytes), SUM(cpu_ms) FROM core_cost WHERE ts >= ? AND ts < ? GROUP BY class", arrayOf(from.toString(), to.toString())).use { c ->
-            buildMap { while (c.moveToNext()) put(c.getString(0), ProtocolCost.Measured(c.getLong(1), c.getLong(2))) }
+        rawQuery("SELECT class, SUM(bytes), SUM(cpu_ms), COUNT(*) FROM core_cost WHERE ts >= ? AND ts < ? GROUP BY class", arrayOf(from.toString(), to.toString())).use { c ->
+            buildMap { while (c.moveToNext()) put(c.getString(0), ProtocolCost.Measured(c.getLong(1), c.getLong(2), c.getInt(3))) }
+        }
+    }
+
+    suspend fun coreCostWindows(from: Long, to: Long): List<ProtocolCost.Window> = read(emptyList()) {
+        rawQuery("SELECT class, bytes, cpu_ms FROM core_cost WHERE ts >= ? AND ts < ?", arrayOf(from.toString(), to.toString())).use { c ->
+            buildList { while (c.moveToNext()) add(ProtocolCost.Window(c.getString(0), c.getLong(1), c.getLong(2))) }
         }
     }
 
@@ -371,6 +494,19 @@ object StatsDb {
         for (t in TABLES) delete(t, "ts < ?", arrayOf(cutoff.toString()))
     }
 
+    /**
+     * Failed samples after the last answer of any server are dropped: the network itself didn't reach the servers
+     * (none, or limited to the zones' own sites), which says nothing about them. Written by the queue, so it also
+     * covers failures still waiting to be committed.
+     */
+    fun forgetFailures() = write {
+        val since = rawQuery("SELECT MAX(ts) FROM samples WHERE ms IS NOT NULL", emptyArray<String>()).use { c ->
+            if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else 0L
+        }
+        val n = delete("samples", "ms IS NULL AND ts > ?", arrayOf(since.toString()))
+        if (n > 0) AppLog.debug("StatsDb", "forgot $n failed check(s) since the last answer: the network didn't reach the servers")
+    }
+
     fun clear() = write {
         for (t in TABLES) delete(t, null, null)
     }
@@ -378,8 +514,8 @@ object StatsDb {
     // ------------------------------------------------------------------ queries
 
     data class Sample(val ts: Long, val server: String, val ms: Int?)
-    data class PhaseRow(val ts: Long, val phase: Phase, val server: String?)
-    data class EventRow(val ts: Long, val type: Event, val server: String?)
+    data class PhaseRow(val ts: Long, val phase: Phase, val server: String?, val run: Long? = null)
+    data class EventRow(val ts: Long, val type: Event, val server: String?, val pos: Int? = null, val posOf: Int? = null)
     data class ScanRow(val ts: Long, val available: Int, val total: Int, val best: Int?, val servers: Int? = null)
     data class Traffic(val proxyUp: Long, val proxyDown: Long, val directUp: Long, val directDown: Long) {
         val proxy get() = proxyUp + proxyDown
@@ -540,20 +676,29 @@ object StatsDb {
         }
     }
 
-    /** Phase rows in the period, plus the last row before it (the state the period started in). */
+    /** Phase rows in the period, plus the last row before it (the state the period started in) and the first after it. */
     suspend fun phases(from: Long, to: Long): List<PhaseRow> = read(emptyList()) {
-        val before = rawQuery("SELECT ts, phase, server FROM phases WHERE ts < ? ORDER BY ts DESC LIMIT 1", arrayOf(from.toString())).use { c ->
-            if (c.moveToFirst()) PhaseRow(c.getLong(0), Phase.valueOf(c.getString(1)), c.getString(2)) else null
+        fun row(c: android.database.Cursor) = PhaseRow(c.getLong(0), Phase.valueOf(c.getString(1)), c.getString(2), if (c.isNull(3)) null else c.getLong(3))
+        val before = rawQuery("SELECT ts, phase, server, run FROM phases WHERE ts < ? ORDER BY ts DESC LIMIT 1", arrayOf(from.toString())).use { c ->
+            if (c.moveToFirst()) runCatching { row(c) }.getOrNull() else null
         }
-        val rows = rawQuery("SELECT ts, phase, server FROM phases WHERE ts >= ? AND ts < ? ORDER BY ts", arrayOf(from.toString(), to.toString())).use { c ->
-            buildList { while (c.moveToNext()) runCatching { add(PhaseRow(c.getLong(0), Phase.valueOf(c.getString(1)), c.getString(2))) } }
+        val rows = rawQuery("SELECT ts, phase, server, run FROM phases WHERE ts >= ? AND ts < ? ORDER BY ts", arrayOf(from.toString(), to.toString())).use { c ->
+            buildList { while (c.moveToNext()) runCatching { add(row(c)) } }
         }
-        listOfNotNull(before) + rows
+        // The row after the period too: it tells whether the period's last row was followed by the same process.
+        val after = rawQuery("SELECT ts, phase, server, run FROM phases WHERE ts >= ? ORDER BY ts LIMIT 1", arrayOf(to.toString())).use { c ->
+            if (c.moveToFirst()) runCatching { row(c) }.getOrNull() else null
+        }
+        listOfNotNull(before) + rows + listOfNotNull(after)
     }
 
     suspend fun events(from: Long, to: Long): List<EventRow> = read(emptyList()) {
-        rawQuery("SELECT ts, type, server FROM events WHERE ts >= ? AND ts < ? ORDER BY ts", arrayOf(from.toString(), to.toString())).use { c ->
-            buildList { while (c.moveToNext()) runCatching { add(EventRow(c.getLong(0), Event.valueOf(c.getString(1)), c.getString(2))) } }
+        rawQuery("SELECT ts, type, server, pos, pos_of FROM events WHERE ts >= ? AND ts < ? ORDER BY ts", arrayOf(from.toString(), to.toString())).use { c ->
+            buildList {
+                while (c.moveToNext()) runCatching {
+                    add(EventRow(c.getLong(0), Event.valueOf(c.getString(1)), c.getString(2), if (c.isNull(3)) null else c.getInt(3), if (c.isNull(4)) null else c.getInt(4)))
+                }
+            }
         }
     }
 
@@ -610,7 +755,7 @@ object StatsDb {
     /** Writes a whole table as CSV (header + rows) for the statistics export. */
     suspend fun dumpCsv(table: String, out: java.io.Writer) = read(Unit) {
         require(table in TABLES) { "unknown table" }
-        rawQuery("SELECT * FROM $table ORDER BY ts", null).use { c ->
+        rawQuery("SELECT * FROM $table ORDER BY ts", emptyArray<String>()).use { c ->
             out.write(c.columnNames.joinToString(",") + "\n")
             while (c.moveToNext()) {
                 out.write((0 until c.columnCount).joinToString(",") { i -> if (c.isNull(i)) "" else csv(c.getString(i)) } + "\n")
@@ -658,7 +803,7 @@ object StatsDb {
     }
 
     suspend fun firstTimestamp(): Long? = read(null) {
-        rawQuery("SELECT MIN(ts) FROM (SELECT MIN(ts) AS ts FROM samples UNION ALL SELECT MIN(ts) FROM phases)", null).use { c ->
+        rawQuery("SELECT MIN(ts) FROM (SELECT MIN(ts) AS ts FROM samples UNION ALL SELECT MIN(ts) FROM phases)", emptyArray<String>()).use { c ->
             if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null
         }
     }

@@ -55,12 +55,9 @@ object CoreEnv {
         if (ready) return
         appContext = context.applicationContext
         val dir = File(context.filesDir, "geo").apply { mkdirs() }
-        val stamp = File(dir, ".version")
-        val version = context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime.toString()
-        // The APK's lists after an install or update, unless newer ones were downloaded meanwhile (GeoLists).
-        val changed = stamp.takeIf { it.exists() }?.readText() != version
-        GeoLists.install(context, dir, changed)
-        if (changed) stamp.writeText(version)
+        // The lists are downloaded (GeoLists); until then the files are there but empty.
+        GeoLists.install(dir)
+        app.borderless.data.GeoFile.dir = dir
         val prefs = context.getSharedPreferences("core", Context.MODE_PRIVATE)
         val key = prefs.getString("xudp", null) ?: ByteArray(32).also { SecureRandom().nextBytes(it) }
             .let { Base64.encodeToString(it, Base64.NO_PADDING or Base64.URL_SAFE or Base64.NO_WRAP) }
@@ -104,7 +101,7 @@ class CoreRunner {
 
     suspend fun stop() = withContext(Dispatchers.IO) {
         lock.withLock {
-            if (controller.isRunning) runCatching { controller.stopLoop() }.onFailure { Log.w(TAG, "stop failed", it) }
+            if (controller.isRunning) runCatching { controller.stopLoop() }.onFailure { AppLog.debug("core", "stop failed", it) }
         }
     }
 
@@ -151,7 +148,12 @@ object Prober {
     suspend fun probe(server: Server, s: AppSettings, timeoutMs: Long = s.probeTimeoutSec * 1000L): Int? =
         probeDetailed(server, s, timeoutMs).ms
 
+    /** Demo builds only (README screenshots): answers probes with made-up results instead of the network. */
+    @Volatile
+    var standIn: (suspend (Server) -> Outcome)? = null
+
     suspend fun probeDetailed(server: Server, s: AppSettings, timeoutMs: Long): Outcome {
+        standIn?.let { return it(server) }
         val config = try {
             XrayConfig.probe(LinkParser.parse(server.link).outbounds, s, xrayLogLevel(s), xrayAccessLog(s))
         } catch (e: Exception) {

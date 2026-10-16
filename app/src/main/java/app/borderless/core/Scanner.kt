@@ -13,6 +13,7 @@ import app.borderless.data.StatsDb
 import app.borderless.data.Server
 import app.borderless.data.ProtocolCost
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -22,9 +23,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -51,16 +56,6 @@ object Scanner {
     private val _probing = MutableStateFlow<Set<String>>(emptySet())
     /** Servers being probed at this moment (a subset of [pending]; the rest are queued). */
     val probing: StateFlow<Set<String>> = _probing
-
-    private val _skipped = MutableStateFlow<Set<String>>(emptySet())
-    /**
-     * Servers without any result whose last probe the scan cut short (it stopped waiting once fast servers had
-     * answered): treated as not checked and kept out of sight until a probe gets a result.
-     */
-    val skipped: StateFlow<Set<String>> = _skipped
-
-    /** Servers the running scan cut short (left out of its totals). */
-    private val skippedThisScan = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     private val _plan = MutableStateFlow<List<String>>(emptyList())
     /**
@@ -92,41 +87,155 @@ object Scanner {
     }
 
     /**
-     * Starts a full scan, or returns the one already running. [first] ids are probed before the rest.
-     * [only]: probe just these servers (a targeted rescan in the battery saving mode), in plan order.
+     * The servers of the running scan: a queue later requests extend ([start] while a scan runs), so nobody joins a
+     * scan that doesn't cover what they need (a failover joining a targeted rescan used to conclude "nothing works"
+     * from 8 servers). Workers take servers by index; once one finds the queue empty it is closed, and a request
+     * after that runs as the next scan.
+     */
+    private class Run(servers: List<Server>, reason: Activity.Kind, visible: Collection<String>) {
+        private val list = ArrayList(servers)
+        private var next = 0
+        private var closed = false
+        private var inFlight = 0
+        val reasons = mutableSetOf(reason)
+
+        /** Only automatic background reasons asked for it: probes are spread out in time (see [probeWith]). */
+        @Synchronized
+        fun spaced(): Boolean = reasons.all { it in SPACED }
+
+        /** A server is waiting to be taken (a worker paces itself only then, not to find the queue empty). */
+        @Synchronized
+        fun hasNext(): Boolean = next < list.size
+
+        /** Servers taking part (not hidden ones riding along or rescued), in the order they were queued. */
+        val visible = LinkedHashSet(visible)
+        /** Changes when servers are added or a probe ends: a worker with nothing to take waits for it. */
+        val signal = MutableStateFlow(0)
+
+        /**
+         * The next server; [WAIT] while the queue is empty but probes are still out (servers may still be added);
+         * null when it is over (empty and nothing out, or [stop]) — closed then, later requests start a new scan.
+         */
+        @Synchronized
+        fun take(stop: Boolean): Any? {
+            if (stop || (next >= list.size && inFlight == 0)) {
+                closed = true
+                return null
+            }
+            if (next >= list.size) return WAIT
+            inFlight++
+            return list[next++]
+        }
+
+        @Synchronized
+        fun ended() {
+            inFlight--
+            signal.value++
+        }
+
+        companion object {
+            val WAIT = Any()
+        }
+
+        /** Adds what isn't queued yet; [first] goes to the front of what hasn't started. False: closed already. */
+        @Synchronized
+        fun add(more: List<Server>, first: List<String>, reason: Activity.Kind, active: Set<String>): List<Server>? {
+            if (closed) return null
+            reasons += reason
+            val known = list.map { it.id }.toSet()
+            val added = more.filter { it.id !in known }
+            val queued = list.subList(next, list.size).toList() + added
+            val head = first.mapNotNull { id -> queued.firstOrNull { it.id == id } }
+            list.subList(next, list.size).clear()
+            list.addAll(head + queued.filter { it !in head })
+            added.forEach { if (it.id in active) visible += it.id }
+            signal.value++
+            return added
+        }
+
+        @Synchronized
+        fun size() = list.size
+
+        @Synchronized
+        fun all(): List<Server> = list.toList()
+    }
+
+    @Volatile
+    private var run: Run? = null
+
+    /**
+     * Starts a scan of [only] (default: every server taking part, a full scan) with [first] ahead, in plan order. If a
+     * scan runs already, the servers it lacks join its queue ([first] moved to the front of what hasn't started) and
+     * its job is returned; it ends once everything queued, these too, is done.
      */
     @Synchronized
     fun start(first: List<String> = emptyList(), reason: Activity.Kind = Activity.Kind.SCAN_MANUAL, only: List<Server>? = null): Job {
-        current?.takeIf { it.isActive }?.let { return it }
-        val full = only == null
-        val ordered = planned(only ?: Repo.activeServers, first)
+        // Careful checks (SECURITY.md S9): automatic scans look at the server in use and the next few only, so the
+        // network doesn't see the whole list at once. Failover and "Ping all" still check everything.
+        val careful = only == null && reason in CAREFUL && Repo.settings.value.carefulScans
+        val targets = if (careful) carefulTargets() else only
+        if (careful) AppLog.debug("Scanner", "careful checks: ${reason.name} narrowed to ${targets?.size} server(s)")
+        val wanted = planned(targets ?: Repo.activeServers, first)
+        val active = Repo.activeServers.map { it.id }.toSet()
+        current?.takeIf { it.isActive }?.let { job ->
+            val added = run?.add(wanted, first, reason, active)
+                // The running scan is closing: this one runs right after it.
+                ?: return scope.launch { job.join(); start(first, reason, only).join() }
+            if (added.isNotEmpty()) {
+                if (reason.group == Activity.Group.PROBE) Activity.count(reason, added.size) else Activity.count(Activity.Kind.PROBE, added.size)
+                _pending.update { it + added.map(Server::id) }
+                order = run?.let { r -> r.all().map { it.id }.filter { it in r.visible } } ?: order
+                AppLog.debug("Scanner", "${added.size} server(s) added to the running scan (${reason.name})")
+            }
+            // Someone else needs servers now: a request to stop early (battery saving) no longer holds.
+            if (stopRequested && reason !in setOfNotNull(currentReason)) stopRequested = false
+            return job
+        }
+        val full = targets == null
+        val ordered = wanted
+        order = ordered.map(Server::id)
         // Auto-visibility: a few hidden servers ride along (after the visible ones) to keep their stats fresh.
         val explore = if (full) AutoPool.explore() else emptyList()
         val all = ordered + explore
-        Activity.count(reason)
-        Activity.count(Activity.Kind.PROBE, ordered.size)
+        // Probes of hidden servers (a rescue) are counted one by one under their own kind, the others as one scan.
+        if (reason.group == Activity.Group.PROBE) Activity.count(reason, ordered.size)
+        else {
+            Activity.count(reason)
+            Activity.count(Activity.Kind.PROBE, ordered.size)
+        }
         Activity.count(Activity.Kind.PROBE_EXPLORE, explore.size)
         stopRequested = false
-        skippedThisScan.clear()
         currentReason = reason
         lastActiveAt = System.currentTimeMillis()
+        val r = Run(all, reason, ordered.map(Server::id).filter { it in active })
+        run = r
+        if (r.spaced()) AppLog.debug("Scanner", "background scan of ${all.size} server(s): probes spread out ${SPACING_MS / 1000}–${(SPACING_MS + SPACING_JITTER_MS) / 1000} s apart")
         val job = scope.launch {
             val started = System.currentTimeMillis()
             _progress.value = Progress(0, all.size, started)
             _pending.update { it + all.map(Server::id) }
             try {
                 // The whole scan is one burst of network activity for the energy estimate.
-                val probed = Energy.track(reason, exchanges = all.size) { probeAll(all) }
-                val stopped = probed < all.size
-                if (stopped) AppLog.debug("Scanner", "scan stopped early: probed $probed of ${all.size}")
-                summarize(ordered.take(minOf(probed, ordered.size)).filter { it.id !in skippedThisScan }, started, reason, stopped, full)
+                val probed = Energy.track(reason, exchanges = all.size) { probeAll(r) }
+                val queued = r.all()
+                val stopped = probed < queued.size
+                if (stopped) AppLog.debug("Scanner", "scan stopped early: probed $probed of ${queued.size}")
+                val done = queued.take(probed)
+                val checked = done.filter { it.id in r.visible }
+                // Covered everything taking part (whoever asked for what): a full scan for the statistics and the pool.
+                val complete = !stopped && Repo.activeServers.all { srv -> done.any { it.id == srv.id } }
+                // A rescue of hidden servers reports itself (AutoPool) and isn't a scan of the servers in use: kept out of
+                // the scan statistics ("servers available" chart).
+                if (r.reasons != setOf(Activity.Kind.PROBE_RESCUE)) summarize(checked, started, reason, stopped, complete)
+                // Nothing answered at all: if the network itself doesn't reach out, the failures don't count (NetCheck).
+                if (complete && checked.none { Repo.pings.value[it.id]?.let { p -> p.ok && p.at >= started } == true }) NetCheck.reach()
                 refreshRanking()
                 // Pool decisions need every visible server's answer.
-                if (full && !stopped) AutoPool.onScanFinished(ordered, started)
+                if (complete) AutoPool.onScanFinished(checked, started)
             } finally {
                 lastActiveAt = System.currentTimeMillis()
                 _progress.value = null
-                _pending.update { it - all.map(Server::id).toSet() }
+                _pending.update { it - r.all().map(Server::id).toSet() }
             }
         }
         current = job
@@ -135,12 +244,44 @@ object Scanner {
 
     val isRunning: Boolean get() = current?.isActive == true
 
+    /** The check order of the latest scan (servers it probes, in the order it starts them; hidden ones excluded). */
+    @Volatile
+    private var order: List<String> = emptyList()
+
+    /**
+     * Where [id] stands (1-based) in the check order that found it, and of how many: the latest scan's order, or
+     * the order a scan would use now ([first] first) when the choice came from fresh results without a scan.
+     */
+    fun positionOf(id: String, first: List<String> = emptyList()): Pair<Int, Int>? {
+        val o = order.takeIf { id in it } ?: planned(Repo.activeServers, first).map(Server::id)
+        val i = o.indexOf(id)
+        return if (i < 0) null else (i + 1) to o.size
+    }
+
+    /**
+     * Servers that just appeared (a subscription that downloaded for the first time or grew): probed as soon as
+     * no scan runs, so they don't sit on the main screen without a result. A scan that runs anyway (often the
+     * caller's own full one, started right after) may already cover them: only the ones still without a result
+     * are probed.
+     */
+    fun probeNew(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        scope.launch {
+            delay(NEW_SERVERS_DELAY_MS)
+            while (true) current?.takeIf { it.isActive }?.join() ?: break
+            val todo = ids.mapNotNull(Repo::server).filter { Repo.isActive(it) && Repo.pings.value[it.id] == null }
+            if (todo.isEmpty()) return@launch
+            AppLog.debug("Scanner", "probing ${todo.size} new server(s)")
+            start(reason = Activity.Kind.SCAN_NEW, only = todo).join()
+        }
+    }
+
     /**
      * Stops the running scan if [reason] started it: probes in flight finish, no new ones start.
      * The battery saving mode uses it once the engine has chosen a server.
      */
     fun finishEarly(reason: Activity.Kind) {
-        if (isRunning && currentReason == reason) stopRequested = true
+        if (isRunning && run?.reasons == setOf(reason)) stopRequested = true
     }
 
     suspend fun probeOne(server: Server, timeoutMs: Long? = null): Int? {
@@ -148,21 +289,9 @@ object Scanner {
         _probing.update { it + server.id }
         try {
             val s = Repo.settings.value
-            val base = s.probeTimeoutSec * 1000L
-            val o = Prober.probeDetailed(server, s, timeoutMs ?: base)
-            // Cut short by the adaptive timeout: we only know it is slower than the good ones,
-            // not that it is down, so keep its previous result instead of marking it unavailable.
-            val cutShort = o.timedOut && (timeoutMs ?: base) < base
-            // Cut short: as if it had not been checked at all (no result, no sample, not in the scan's totals;
-            // a server without any result yet stays out of sight until it has one).
-            if (!cutShort) {
-                Repo.recordPing(server.id, o.ms, probe = true)
-                StatsDb.sample(server.id, o.ms, StatsDb.Kind.PROBE)
-                _skipped.update { it - server.id }
-            } else {
-                skippedThisScan += server.id
-                if (Repo.pings.value[server.id] == null) _skipped.update { it + server.id }
-            }
+            val o = Prober.probeDetailed(server, s, timeoutMs ?: s.probeTimeoutSec * 1000L)
+            Repo.recordPing(server.id, o.ms, probe = true)
+            StatsDb.sample(server.id, o.ms, StatsDb.Kind.PROBE)
             _results.emit(server.id to o.ms)
             return o.ms
         } finally {
@@ -178,14 +307,14 @@ object Scanner {
     /** Parallel probes the next scan starts with (for the settings screen). */
     val concurrencyNow: Int get() = learnedConcurrency.takeIf { it > 0 } ?: Repo.settings.value.effectiveConcurrency
 
-    /** Probes [servers]; returns how many were probed (fewer if stopped early). */
-    private suspend fun probeAll(servers: List<Server>): Int {
+    /** Probes the servers of [r] (its queue may grow meanwhile); returns how many were probed (fewer if stopped early). */
+    private suspend fun probeAll(r: Run): Int {
         val manual = Repo.settings.value.probeConcurrency
         val control = ConcurrencyControl(
             start = if (manual > 0) manual else learnedConcurrency.takeIf { it > 0 } ?: Repo.settings.value.effectiveConcurrency,
             adaptive = manual == 0,
         )
-        val probed = probeWith(control, servers)
+        val probed = probeWith(control, r)
         if (control.adaptive) {
             if (control.limit != learnedConcurrency) AppLog.debug("Scanner", "parallel probes: ${control.limit} (${control.changes})")
             learnedConcurrency = control.limit
@@ -193,40 +322,88 @@ object Scanner {
         return probed
     }
 
-    private suspend fun probeWith(control: ConcurrencyControl, servers: List<Server>): Int {
-        val next = AtomicInteger(0)
+    /** The server in use and the next [CAREFUL_NEXT] of the plan (see [start]). */
+    private fun carefulTargets(): List<Server> {
+        val active = Repo.activeServers.associateBy { it.id }
+        val cur = TunnelState.status.value.serverId?.takeIf { it in active }
+        return (listOfNotNull(cur) + _plan.value.filter { it in active && it != cur }.take(CAREFUL_NEXT)).mapNotNull(active::get)
+    }
+
+    private suspend fun probeWith(control: ConcurrencyControl, r: Run): Int {
+        val taken = AtomicInteger(0)
+        // Background scans start one probe every few seconds (random gap) instead of a burst, so the network sees
+        // no fan-out to the whole list at once (SECURITY.md S9). Anything urgent joining the scan ends the spacing.
+        val pace = kotlinx.coroutines.sync.Mutex()
+        var lastStart = 0L
+        val base = Repo.settings.value.probeTimeoutSec * 1000L
         coroutineScope {
             val found = java.util.concurrent.ConcurrentLinkedQueue<Int>()
             var done = 0
-            // A fixed pool of workers takes servers strictly in list order, so probes start in plan order
+            // Probes still waiting for an answer after their slot was handed on (see below).
+            val waiting = AtomicInteger(0)
+            fun finished(ms: Int?) {
+                ms?.let { found += it }
+                val d = synchronized(this@Scanner) { ++done }
+                _progress.value = Progress(d, r.size(), _progress.value?.startedAt ?: 0)
+                r.ended()
+            }
+            // A fixed pool of workers takes servers strictly in queue order, so probes start in plan order
             // (one coroutine per server racing for a semaphore started them in random order). How many of
-            // them probe at once is adjusted on the fly (ConcurrencyControl).
-            repeat(minOf(control.max, servers.size)) {
+            // them probe at once is adjusted on the fly (ConcurrencyControl). As many workers as the limit can
+            // reach: the queue may grow while the scan runs.
+            repeat(control.max) {
                 launch {
                     while (true) {
                         control.acquire()
-                        val i = if (stopRequested) servers.size else next.getAndIncrement()
-                        if (i >= servers.size) { control.release(); break }
-                        val server = servers[i]
+                        if (r.spaced() && r.hasNext()) pace.withLock {
+                            val wait = lastStart + SPACING_MS + kotlin.random.Random.nextLong(SPACING_JITTER_MS) - System.currentTimeMillis()
+                            if (lastStart > 0 && wait > 0) withTimeoutOrNull(wait) { r.signal.first { !r.spaced() } }
+                            lastStart = System.currentTimeMillis()
+                        }
+                        val seen = r.signal.value
+                        val next = r.take(stopRequested)
+                        if (next == null) { control.release(); break }
+                        if (next === Run.WAIT) {
+                            control.release()
+                            r.signal.first { it != seen }
+                            continue
+                        }
+                        val server = next as Server
+                        taken.incrementAndGet()
                         val typical = Repo.pings.value[server.id]?.typical
-                        val timeout = adaptiveTimeout(found.toList(), synchronized(this@Scanner) { done }, servers.size)
-                        val ms = try { probeOne(server, timeout) } finally { control.release() }
-                        ms?.let { found += it }
-                        control.onResult(ms, typical)
-                        val d = synchronized(this@Scanner) { ++done }
-                        _progress.value = Progress(d, servers.size, _progress.value?.startedAt ?: 0)
+                        // Every probe waits the full timeout (longer if the network looks slow), so each server
+                        // gets a real result. Once fast servers have answered, a slow probe stops holding its slot
+                        // after the adaptive wait: it keeps waiting for its answer on its own, and the queue moves on.
+                        val wait = adaptiveTimeout(found.toList(), synchronized(this@Scanner) { done }, r.size())
+                        val probe = async { probeOne(server, maxOf(wait, base)) }
+                        val early = if (wait < base && waiting.get() < control.limit) withTimeoutOrNull(wait) { probe.await() } else null
+                        if (early != null || probe.isCompleted) {
+                            val ms = early ?: probe.await()
+                            control.release()
+                            control.onResult(ms, typical)
+                            finished(ms)
+                        } else if (wait < base && waiting.get() < control.limit) {
+                            control.release()
+                            control.onResult(null, typical)
+                            waiting.incrementAndGet()
+                            launch { val ms = try { probe.await() } finally { waiting.decrementAndGet() }; finished(ms) }
+                        } else {
+                            val ms = try { probe.await() } finally { control.release() }
+                            control.onResult(ms, typical)
+                            finished(ms)
+                        }
                     }
                 }
             }
         }
-        // Every index handed out below the list size was probed.
-        return minOf(next.get(), servers.size)
+        // Every server handed out was probed.
+        return taken.get()
     }
 
     /**
-     * Timeout for the next probe of a scan. Once several fast servers answered, slow ones are not
-     * worth waiting for; if nothing answered after half the list, the network itself is probably
-     * slow, so wait longer than usual.
+     * How long the next probe of a scan holds its slot. Once several fast servers answered, slow ones are not
+     * worth holding the queue for (they still get their answer, see [probeWith]); if nothing answered after half
+     * the list, the network itself is probably slow, so the probe waits longer than usual.
      */
     fun adaptiveTimeout(found: List<Int>, done: Int, total: Int): Long {
         val base = Repo.settings.value.probeTimeoutSec * 1000L
@@ -305,7 +482,18 @@ object Scanner {
         )
     }
 
+    /** Scans spread out in time: only automatic background rescans (the user waits for the others). */
+    private val SPACED = setOf(Activity.Kind.SCAN_BACKGROUND)
+    private const val SPACING_MS = 2_000L
+    private const val SPACING_JITTER_MS = 4_000L
+
+    /** Scans narrowed by careful checks: the automatic ones that only look for something faster or fresher. */
+    private val CAREFUL = setOf(Activity.Kind.SCAN_BACKGROUND, Activity.Kind.SCAN_OPEN, Activity.Kind.SCAN_STRATEGY)
+    private const val CAREFUL_NEXT = 3
+
     private const val RANKING_WINDOW_MS = 3 * 86_400_000L
     private const val FRESH_MS = 10 * 60_000L
     private const val UNKNOWN_SCORE = 0.3
+    /** Lets the caller of a subscription update start its own scan first (see [probeNew]). */
+    private const val NEW_SERVERS_DELAY_MS = 2_000L
 }

@@ -2,6 +2,7 @@ package app.borderless.data
 
 import android.content.Context
 import android.util.Log
+import app.borderless.R
 import app.borderless.config.LinkParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +45,7 @@ object Repo {
     private val _settings = MutableStateFlow(AppSettings())
     private val _groups = MutableStateFlow<List<Group>>(emptyList())
     private val _auto = MutableStateFlow(AutoState())
+    private val _zones = MutableStateFlow<List<CustomZone>>(emptyList())
 
     val servers: StateFlow<List<Server>> = _servers.asStateFlow()
     val subscriptions: StateFlow<List<Subscription>> = _subscriptions.asStateFlow()
@@ -54,6 +56,9 @@ object Repo {
     val groups: StateFlow<List<Group>> = _groups.asStateFlow()
     val auto: StateFlow<AutoState> = _auto.asStateFlow()
 
+    /** Domain zones the user made (see [CustomZone]); they take part like regions.json's ([Regions.custom]). */
+    val zones: StateFlow<List<CustomZone>> = _zones.asStateFlow()
+
     /** Servers that take part in pinging and selection, in list order; updates with visibility changes. */
     val visible: StateFlow<List<Server>> = combine(_servers, _settings, _auto) { list, s, a -> list.filter { isActive(it, s, a) } }
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
@@ -62,6 +67,7 @@ object Repo {
     private val subsSer = ListSerializer(Subscription.serializer())
     private val pingsSer = MapSerializer(String.serializer(), PingRecord.serializer())
     private val groupsSer = ListSerializer(Group.serializer())
+    private val zonesSer = ListSerializer(CustomZone.serializer())
 
     @Volatile
     private var initialized = false
@@ -76,6 +82,8 @@ object Repo {
         _settings.value = read("settings.json", AppSettings.serializer()) ?: AppSettings.fresh()
         _groups.value = read("groups.json", groupsSer) ?: emptyList()
         _auto.value = read("auto.json", AutoState.serializer()) ?: AutoState()
+        _zones.value = read("zones.json", zonesSer) ?: emptyList()
+        Regions.custom = _zones.value.map(CustomZone::toRegion)
         checkGroups()
         initialized = true
     }
@@ -128,11 +136,16 @@ object Repo {
     fun server(id: String?): Server? = id?.let { i -> _servers.value.firstOrNull { it.id == i } }
 
     /**
-     * Whether a server takes part in pinging and selection: in the auto pool when auto-visibility is
-     * on, otherwise not hidden by the user.
+     * Whether a server takes part in pinging and selection: with countries chosen, their servers not hidden by the
+     * user (auto-visibility doesn't apply then); otherwise in the auto pool when auto-visibility is on, else not
+     * hidden by the user.
      */
-    fun isActive(s: Server, settings: AppSettings = _settings.value, auto: AutoState = _auto.value): Boolean =
-        if (settings.autoActive) s.id in auto.pool else !s.disabled
+    fun isActive(s: Server, settings: AppSettings = _settings.value, auto: AutoState = _auto.value): Boolean = when {
+        settings.avoidInsecure && Insecurity.of(s).isNotEmpty() -> false
+        settings.countries.isNotEmpty() -> Countries.of(s) in settings.countries && !s.disabled
+        settings.autoActive -> s.id in auto.pool
+        else -> !s.disabled
+    }
 
     fun isActive(id: String): Boolean = server(id)?.let { isActive(it) } == true
 
@@ -473,6 +486,16 @@ object Repo {
         return _settings.value.deviceId
     }
 
+    /**
+     * The device id for a new subscription at [url]: HMAC-SHA256 of its host keyed with [deviceId], so every provider
+     * sees a stable id of its own and two providers can't tell they serve the same phone.
+     */
+    fun deviceIdFor(url: String): String {
+        val host = runCatching { java.net.URL(url).host.lowercase() }.getOrDefault(url)
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256").apply { init(javax.crypto.spec.SecretKeySpec(deviceId().toByteArray(), "HmacSHA256")) }
+        return mac.doFinal(host.toByteArray()).take(16).joinToString("") { "%02x".format(it) }
+    }
+
     /** Only servers added by hand can change group: subscription servers follow their subscription. */
     fun setServerGroup(id: String, groupId: String) {
         _servers.update { list ->
@@ -484,6 +507,31 @@ object Repo {
     }
 
     private fun saveGroups() = write("groups.json", groupsSer) { _groups.value }
+
+    // ------------------------------------------------------------------ the user's domain zones
+
+    fun zone(id: String): CustomZone? = _zones.value.firstOrNull { it.id == id }
+
+    /** Adds [z] (switched on) or replaces the zone with its id. Its `.dat` files no entry names any more go. */
+    fun saveZone(z: CustomZone, enable: Boolean = false) {
+        val used = (z.direct + z.server).filter { it.startsWith("ext:") }.map { it.removePrefix("ext:").substringBefore(':') }.toSet()
+        zoneFiles(z.id).filter { it.name !in used }.forEach { it.delete() }
+        _zones.update { list -> if (list.any { it.id == z.id }) list.map { if (it.id == z.id) z else it } else list + z }
+        Regions.custom = _zones.value.map(CustomZone::toRegion)
+        write("zones.json", zonesSer) { _zones.value }
+        if (enable) updateSettings { it.copy(regions = it.regions + z.id) }
+    }
+
+    /** The `.dat` files kept for a zone (DatFile), in the folder the core reads lists from. */
+    fun zoneFiles(id: String): List<File> = GeoFile.dir?.listFiles { f -> f.name.startsWith("$id-") && f.name.endsWith(".dat") }?.toList().orEmpty()
+
+    fun deleteZone(id: String) {
+        zoneFiles(id).forEach { it.delete() }
+        _zones.update { list -> list.filterNot { it.id == id } }
+        Regions.custom = _zones.value.map(CustomZone::toRegion)
+        write("zones.json", zonesSer) { _zones.value }
+        updateSettings { it.copy(regions = it.regions - id) }
+    }
 
     // ------------------------------------------------------------------ sharing
 
@@ -538,6 +586,29 @@ object Repo {
         schedulePingSave()
     }
 
+    /**
+     * The detailed core log records every destination (the access log): it doesn't stay on for good — a day after it
+     * was turned on it turns itself off (checked at app start and hourly by the engine).
+     */
+    fun expireVerbose() {
+        val s = _settings.value
+        if (!s.verboseLog) return
+        val now = System.currentTimeMillis()
+        if (s.verboseSince == 0L) updateSettings { it.copy(verboseSince = now) }
+        else if (now - s.verboseSince > VERBOSE_MS) {
+            updateSettings { it.copy(verboseLog = false, verboseSince = 0) }
+            AppLog.event(LText.of(R.string.ev_verbose_off))
+        }
+    }
+
+    private const val VERBOSE_MS = 24 * 3_600_000L
+
+    /** A health check of [id] through the running core succeeded and took [ms] in all. */
+    fun recordCheck(id: String, ms: Int) {
+        _pings.update { m -> m[id]?.let { r -> m + (id to r.copy(checks = (r.checks + ms).takeLast(5))) } ?: m }
+        schedulePingSave()
+    }
+
     fun clearPings() {
         _pings.value = emptyMap()
         schedulePingSave()
@@ -578,8 +649,18 @@ object Repo {
         val f = File(dir, name)
         if (!f.exists()) return null
         return try {
-            val (bytes, _) = Crypto.open(f.readBytes(), name)
-            json.decodeFromString(ser, String(bytes))
+            val (bytes, reseal) = Crypto.open(f.readBytes(), name)
+            json.decodeFromString(ser, String(bytes)).also {
+                // Unencrypted (written without a Keystore) or under an old key: sealed with the key in use now.
+                if (reseal) runCatching {
+                    val tmp = File(dir, "$name.tmp")
+                    tmp.writeBytes(Crypto.seal(bytes, name))
+                    tmp.renameTo(f)
+                }
+            }
+        } catch (e: Crypto.Locked) {
+            // Kept exactly as it is until the key can be opened again (no copy, no report: Crypto says it once).
+            null
         } catch (e: Exception) {
             Log.w(TAG, "failed to read $name", e)
             val backup = File(dir, "$name.broken-${System.currentTimeMillis()}")
@@ -593,6 +674,8 @@ object Repo {
 
     /** Writes the value current at execution time, so out-of-order launches never persist stale data. */
     private fun <T> write(name: String, ser: KSerializer<T>, value: () -> T) {
+        // Stored data that can't be opened now must not be replaced (see Crypto.locked).
+        if (Crypto.locked) return
         scope.launch {
             synchronized(writeLock) {
                 try {

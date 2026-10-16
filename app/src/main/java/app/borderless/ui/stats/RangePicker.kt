@@ -10,9 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
+import app.borderless.ui.AppAlertDialog
 import androidx.compose.material3.DatePicker
-import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -58,7 +57,7 @@ fun RangeDialog(initialFrom: Long, initialTo: Long, onDismiss: () -> Unit, onApp
     var editing by remember { mutableStateOf<String?>(null) }
     val valid = from < to
 
-    AlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Palette.background,
         title = { Text(stringResource(R.string.period_custom)) },
@@ -78,8 +77,18 @@ fun RangeDialog(initialFrom: Long, initialTo: Long, onDismiss: () -> Unit, onApp
             val current = if (editing == "fromDate") from else to
             // The date picker works in UTC midnight; keep the local time of day.
             val state = rememberDatePickerState(initialSelectedDateMillis = localDateAsUtc(current), selectableDates = PastOrToday)
-            DatePickerDialog(
+            // The app's own dialog around Material's calendar, coloured like the rest of the app.
+            AppAlertDialog(
                 onDismissRequest = { editing = null },
+                wide = true,
+                title = { Text(stringResource(if (editing == "fromDate") R.string.range_from else R.string.range_to)) },
+                text = {
+                    InAppFont {
+                        DatePicker(
+                            state, title = null, headline = null, showModeToggle = false, colors = calendarColors(),
+                        )
+                    }
+                },
                 confirmButton = {
                     TextButton({
                         state.selectedDateMillis?.let { utc ->
@@ -90,17 +99,17 @@ fun RangeDialog(initialFrom: Long, initialTo: Long, onDismiss: () -> Unit, onApp
                     }) { Text(stringResource(R.string.done)) }
                 },
                 dismissButton = { TextButton({ editing = null }) { Text(stringResource(R.string.cancel)) } },
-            ) { DatePicker(state) }
+            )
         }
 
         "fromTime", "toTime" -> {
             val current = if (editing == "fromTime") from else to
             val cal = Calendar.getInstance().apply { timeInMillis = current }
             val state = rememberTimePickerState(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE), is24Hour = true)
-            AlertDialog(
+            AppAlertDialog(
                 onDismissRequest = { editing = null },
                 containerColor = Palette.background,
-                text = { TimePicker(state) },
+                text = { InAppFont { TimePicker(state, colors = clockColors()) } },
                 confirmButton = {
                     TextButton({
                         val v = Calendar.getInstance().apply {
@@ -139,6 +148,63 @@ private fun Field(text: String, modifier: Modifier, onClick: () -> Unit) {
             .padding(horizontal = 14.dp, vertical = 10.dp),
     )
 }
+
+/** Material's pickers in the app's font (their numbers and labels come from the theme's typography). */
+@Composable
+private fun InAppFont(content: @Composable () -> Unit) {
+    val t = androidx.compose.material3.MaterialTheme.typography
+    val f = app.borderless.ui.theme.Body
+    androidx.compose.material3.MaterialTheme(
+        typography = androidx.compose.material3.Typography(
+            displayLarge = t.displayLarge.copy(fontFamily = f), displayMedium = t.displayMedium.copy(fontFamily = f),
+            displaySmall = t.displaySmall.copy(fontFamily = f), headlineLarge = t.headlineLarge.copy(fontFamily = f),
+            headlineMedium = t.headlineMedium.copy(fontFamily = f), headlineSmall = t.headlineSmall.copy(fontFamily = f),
+            titleLarge = t.titleLarge.copy(fontFamily = f), titleMedium = t.titleMedium.copy(fontFamily = f),
+            titleSmall = t.titleSmall.copy(fontFamily = f), bodyLarge = t.bodyLarge.copy(fontFamily = f),
+            bodyMedium = t.bodyMedium.copy(fontFamily = f), bodySmall = t.bodySmall.copy(fontFamily = f),
+            labelLarge = t.labelLarge.copy(fontFamily = f), labelMedium = t.labelMedium.copy(fontFamily = f),
+            labelSmall = t.labelSmall.copy(fontFamily = f),
+        ),
+        content = content,
+    )
+}
+
+/** The calendar in the app's colours: the accent for the chosen day, soft accent for today, warm greys elsewhere. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun calendarColors() = androidx.compose.material3.DatePickerDefaults.colors(
+    containerColor = Palette.background,
+    subheadContentColor = Palette.textSecondary,
+    navigationContentColor = Palette.textSecondary,
+    weekdayContentColor = Palette.textMuted,
+    yearContentColor = Palette.text,
+    currentYearContentColor = Palette.accentStrong,
+    selectedYearContentColor = androidx.compose.ui.graphics.Color.White,
+    selectedYearContainerColor = Palette.accent,
+    dayContentColor = Palette.text,
+    disabledDayContentColor = Palette.textMuted.copy(alpha = 0.5f),
+    selectedDayContentColor = androidx.compose.ui.graphics.Color.White,
+    selectedDayContainerColor = Palette.accent,
+    todayContentColor = Palette.accentStrong,
+    todayDateBorderColor = Palette.accent,
+    dividerColor = Palette.outline,
+)
+
+/** The clock in the app's colours. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun clockColors() = androidx.compose.material3.TimePickerDefaults.colors(
+    clockDialColor = Palette.card,
+    clockDialSelectedContentColor = androidx.compose.ui.graphics.Color.White,
+    clockDialUnselectedContentColor = Palette.text,
+    selectorColor = Palette.accent,
+    containerColor = Palette.background,
+    periodSelectorBorderColor = Palette.outline,
+    timeSelectorSelectedContainerColor = Palette.selected,
+    timeSelectorUnselectedContainerColor = Palette.card,
+    timeSelectorSelectedContentColor = Palette.accentStrong,
+    timeSelectorUnselectedContentColor = Palette.text,
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 private object PastOrToday : androidx.compose.material3.SelectableDates {

@@ -9,14 +9,21 @@ import java.io.File
  * "ru"): sites and addresses that should go direct, the ones listed for the server (the only ones sent through
  * the server in [RoutingMode.LISTED_ONLY]), resolvers for its sites, and apps that refuse to work
  * through a tunnel. Nothing is on by default; the user picks zones in the routing settings
- * ([AppSettings.regions]). A new region is one more entry in the file (its geo categories are copied
- * into the bundled geo files by `scripts/build_geo.py`).
+ * ([AppSettings.regions]). A new region is one more entry in the file (the app downloads its geo categories,
+ * see [app.borderless.core.GeoLists]).
  */
 @Serializable
 data class Region(
     val code: String,
+    /** A zone the user made ([CustomZone]): its name; regions.json zones go by their [code]. */
+    val name: String? = null,
     /** Domain zones shown to the user, e.g. ".ru". */
     val zones: List<String> = emptyList(),
+    /**
+     * Other whole top-level names its direct lists may hold ([hash] of the lower-case, punycode name); any other
+     * one is left out of a downloaded list ([GeoCheck]).
+     */
+    val tlds: List<String> = emptyList(),
     val directDomains: List<String> = emptyList(),
     val directIps: List<String> = emptyList(),
     val serverDomains: List<String> = emptyList(),
@@ -30,7 +37,12 @@ data class Region(
     val geo: GeoSource? = null,
 ) {
     /** "ru" → ".ru": what the user sees. */
-    val label: String get() = zones.firstOrNull() ?: ".$code"
+    val label: String get() = name ?: zones.firstOrNull() ?: ".$code"
+
+    /** Its title in lists: the code ("ru"), or the name of a zone the user made. */
+    val title: String get() = name ?: code
+
+    val custom: Boolean get() = code.startsWith(CustomZone.PREFIX)
 }
 
 /**
@@ -72,8 +84,6 @@ data class GeoSource(
     val source: String,
     val geoip: Map<String, String> = emptyMap(),
     val geosite: Map<String, String> = emptyMap(),
-    /** Categories not shipped in the APK (they change daily): downloaded when needed. */
-    val notBundled: List<String> = emptyList(),
     /** Other folders with the same files, tried when [source] can't be reached. */
     val mirrors: List<String> = emptyList(),
 )
@@ -87,14 +97,39 @@ object Regions {
 
     private val loaded: RegionsFile get() = file ?: synchronized(this) { file ?: parseFile(read()).also { file = it } }
 
-    /** Every region the app knows, in file order. */
-    val all: List<Region> get() = loaded.regions
+    /** The zones the user made (set by [Repo] from `zones.json`). */
+    @Volatile
+    var custom: List<Region> = emptyList()
+
+    /** Every region the app knows: the file's in file order, then the user's own. */
+    val all: List<Region> get() = loaded.regions + custom
+
+    /** The zones of regions.json only. */
+    val builtIn: List<Region> get() = loaded.regions
 
     /** Geo sources with their categories: the common lists, then the regions' among [codes] (the chosen zones). */
     fun geoSources(codes: Collection<String>): List<GeoSource> =
         listOfNotNull(loaded.common) + loaded.regions.filter { it.code in codes }.mapNotNull { it.geo }
 
     fun byCode(code: String): Region? = all.firstOrNull { it.code == code }
+
+    /**
+     * Local names (upper case) of the downloaded categories that go direct, by file ("geoip.dat" / "geosite.dat"):
+     * the common `private` ones and every zone's direct lists. These are checked before they are installed ([GeoCheck]).
+     */
+    fun directCategories(): Map<String, Set<String>> {
+        fun codes(kind: String, rules: (Region) -> List<String>) = (listOf("$kind:$LOCAL") + builtIn.flatMap(rules))
+            .filter { it.startsWith("$kind:") }.map { it.substringAfter(':').substringBefore('@').uppercase() }.toSet()
+        return mapOf("geoip.dat" to codes("geoip") { it.directIps }, "geosite.dat" to codes("geosite") { it.directDomains })
+    }
+
+    /** The common category of local names and reserved addresses (checked by stricter rules, see [GeoCheck]). */
+    const val LOCAL = "private"
+
+    /** Whether a zone's direct list may hold the whole top-level [name] (lower case, punycode): see [Region.tlds]. */
+    fun bareTld(name: String): Boolean = builtIn.any { r ->
+        r.zones.any { z -> runCatching { java.net.IDN.toASCII(z.trim('.')).lowercase() }.getOrNull() == name } || hash(name) in r.tlds
+    }
 
     /**
      * Whether a zone's lists are all in the files the core uses (some are downloaded first, see GeoLists). Until then
@@ -130,7 +165,8 @@ object Regions {
     private val digest = ThreadLocal.withInitial { java.security.MessageDigest.getInstance("SHA-256") }
     private val HEX = "0123456789abcdef".toCharArray()
 
-    private fun parseFile(json: String): RegionsFile = runCatching { StoreJson.decodeFromString(RegionsFile.serializer(), json) }.getOrDefault(RegionsFile())
+    private fun parseFile(json: String): RegionsFile = runCatching { StoreJson.decodeFromString(RegionsFile.serializer(), json) }
+        .onFailure { Errors.report(it, "reading regions.json", show = false) }.getOrDefault(RegionsFile())
 
     /** From the app's assets; in unit tests (no Android) from the source tree. */
     private fun read(): String = Res.asset(FILE) ?: File("src/main/assets/$FILE").takeIf { it.exists() }?.readText() ?: "{}"

@@ -63,7 +63,8 @@ object Seal {
  * The app's data key. A random AES-256 key encrypts everything stored ([Repo] files, logs); it is
  * itself kept only in wrapped form, encrypted by a non-exportable key in the Android Keystore
  * (hardware-backed where the phone has it). Without the Keystore — e.g. it is broken on the device —
- * data stays readable but unencrypted and the problem is reported ([initError]).
+ * a new install keeps its data unencrypted and the problem is reported ([initError]). If sealed data is already
+ * here but the Keystore doesn't answer, nothing is rotated or overwritten: the app runs [locked] (SECURITY.md S5).
  */
 object Crypto {
     private const val ALIAS = "borderless.wrap"
@@ -73,34 +74,69 @@ object Crypto {
     var key: SecretKey? = null
         private set
 
-    /** Why encryption is off, if it is. */
+    /** Why encryption is off (or [locked]), if it is. */
     @Volatile
     var initError: Throwable? = null
         private set
 
+    /**
+     * Sealed data is here, but the Keystore didn't answer (often a passing fault, e.g. right after a system update):
+     * the data can't be opened now, and nothing may be written — a write would replace it with plaintext.
+     */
+    @Volatile
+    var locked = false
+        private set
+
+    /** Data keys kept aside by versions that started a new key on any failure; tried when the current one fails. */
+    @Volatile
+    var oldKeys: List<SecretKey> = emptyList()
+        private set
+
+    /** Data sealed with the key in use can't be opened now ([locked]). */
+    class Locked : IllegalStateException("stored data is encrypted and its key is unavailable now")
+
     @Synchronized
     fun init(context: Context) {
         if (key != null) return
-        try {
-            val file = File(context.filesDir, KEY_FILE)
-            val wrapping = keystoreKey()
-            key = if (file.exists()) {
-                try {
-                    SecretKeySpec(Seal.open(wrapping, file.readBytes(), "data-key"), "AES")
-                } catch (e: Exception) {
-                    // The Keystore lost its key (rare: device reset of the keystore). Data sealed with
-                    // the old key cannot be read any more; start a new key and keep the old file aside.
-                    file.renameTo(File(file.path + ".broken-${System.currentTimeMillis()}"))
-                    initError = e
+        val file = File(context.filesDir, KEY_FILE)
+        var last: Exception? = null
+        for (attempt in 0 until 3) {
+            try {
+                val wrapping = keystoreKey()
+                key = if (file.exists()) {
+                    try {
+                        SecretKeySpec(Seal.open(wrapping, file.readBytes(), "data-key"), "AES")
+                    } catch (e: Exception) {
+                        // A passing fault: try again (and in the end run locked), never start a new key over it.
+                        if (!permanent(e)) throw e
+                        // The Keystore lost its key (reset of the keystore): data sealed with the old key can't be
+                        // read any more. Start a new key and keep the old file aside.
+                        file.renameTo(File(file.path + ".broken-${System.currentTimeMillis()}"))
+                        initError = e
+                        newKey(file, wrapping)
+                    }
+                } else {
                     newKey(file, wrapping)
                 }
-            } else {
-                newKey(file, wrapping)
+                oldKeys = file.parentFile?.listFiles { f -> f.name.startsWith("${file.name}.broken-") }.orEmpty().mapNotNull { f ->
+                    runCatching { SecretKeySpec(Seal.open(wrapping, f.readBytes(), "data-key"), "AES") }.getOrNull()
+                }
+                return
+            } catch (e: Exception) {
+                last = e
+                Thread.sleep(250L shl (2 * attempt))
             }
-        } catch (e: Exception) {
-            initError = e
-            key = null
         }
+        initError = last
+        key = null
+        // Data sealed before: keep it as it is until the Keystore answers again (next start).
+        locked = file.exists()
+    }
+
+    /** The data key file can never be opened with this Keystore key (it was replaced or invalidated). */
+    private fun permanent(e: Throwable): Boolean = generateSequence(e) { it.cause }.any {
+        it is javax.crypto.AEADBadTagException || it is android.security.keystore.KeyPermanentlyInvalidatedException ||
+            it is java.security.UnrecoverableKeyException || it is IllegalArgumentException
     }
 
     private fun newKey(file: File, wrapping: SecretKey): SecretKey {
@@ -128,16 +164,24 @@ object Crypto {
         return gen.generateKey()
     }
 
-    /** Encrypts a file's contents for [label] (its name); unencrypted if the Keystore is unavailable. */
-    fun seal(plain: ByteArray, label: String): ByteArray = key?.let { Seal.seal(it, plain, label) } ?: plain
+    /** Encrypts a file's contents for [label] (its name); unencrypted if the Keystore is unavailable (never while [locked]). */
+    fun seal(plain: ByteArray, label: String): ByteArray {
+        if (locked) throw Locked()
+        return key?.let { Seal.seal(it, plain, label) } ?: plain
+    }
 
     /**
-     * Decrypts a file's contents. Unencrypted data (written without a Keystore) is returned as is with `plain = true`.
-     * Throws if the data was tampered with.
+     * Decrypts a file's contents; the flag says it should be written again with the key in use (it was unencrypted,
+     * or sealed with one of the [oldKeys]). Throws [Locked] while the key is unavailable, and if the data was
+     * tampered with.
      */
     fun open(bytes: ByteArray, label: String): Pair<ByteArray, Boolean> {
-        if (!Seal.isSealed(bytes)) return bytes to true
-        val k = key ?: error("data is encrypted but the key is unavailable")
-        return Seal.open(k, bytes, label) to false
+        if (!Seal.isSealed(bytes)) return bytes to (key != null)
+        val k = key ?: throw Locked()
+        return try {
+            Seal.open(k, bytes, label) to false
+        } catch (e: javax.crypto.AEADBadTagException) {
+            oldKeys.firstNotNullOfOrNull { old -> runCatching { Seal.open(old, bytes, label) }.getOrNull() }?.let { it to true } ?: throw e
+        }
     }
 }

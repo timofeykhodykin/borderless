@@ -16,17 +16,17 @@
 </p>
 
 <p align="center">
-  <img alt="Version 1.0.0" src="https://img.shields.io/badge/version-1.0.0-E0654D">
+  <img alt="Version 2.0.0" src="https://img.shields.io/badge/version-2.0.0-E0654D">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-3A3436">
-  <img alt="Xray-core v26.9.30" src="https://img.shields.io/badge/Xray--core-v26.9.30-3A3436">
+  <img alt="Xray-core v26.10.10" src="https://img.shields.io/badge/Xray--core-v26.10.10-3A3436">
   <img alt="Kotlin, Jetpack Compose" src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-3A3436">
   <a href="LICENSE"><img alt="PolyForm Noncommercial license" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-3A3436"></a>
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/main.png" width="16%" alt="Main screen">
+  <img src="docs/screenshots/main.gif" width="16%" alt="Main screen during a scan">
   <img src="docs/screenshots/stats.png" width="16%" alt="Statistics">
-  <img src="docs/screenshots/stats_charts.png" width="16%" alt="Connection and availability charts">
+  <img src="docs/screenshots/stats_charts.png" width="16%" alt="Ping chart">
   <img src="docs/screenshots/activity.png" width="16%" alt="Battery and app activity">
   <img src="docs/screenshots/groups.png" width="16%" alt="Groups and subscriptions">
   <img src="docs/screenshots/settings.png" width="16%" alt="Settings">
@@ -60,12 +60,33 @@ Border(less) — исследовательский proof of concept для од
 ## What it does
 
 **Picks the server for you.** The server in use is watched mostly through its traffic counters, without extra
-requests. When it stops working, every server is checked (the ones that worked recently first) and the app moves
-to the first that answers, after a short wait for a faster one. If none answers, traffic goes direct (or is
-paused — your choice) and the app keeps retrying. A network change (Wi-Fi ↔ mobile) rebuilds the tunnel at once.
+requests: with the screen on, data going out and nothing coming back for a few seconds is noticed at once. A check
+that runs long starts a scan in parallel and probes the current server afresh — if only its connection hung, the
+same server is reconnected; otherwise the app moves to the first server that answers (the ones that worked
+recently first), after a short wait for a faster one. Servers that keep failing on a network are avoided there for
+a while. If none answers, traffic is paused (or goes direct — your choice) and the app keeps retrying; when the
+internet itself comes back, it looks for a server at once instead of waiting for its timers. A network change
+(Wi-Fi ↔ mobile), the system confirming the network again or the screen turning on are noticed immediately.
+After a restart of the phone or an app update the connection comes back by itself if it was on.
 
 **Strategies.** *Stable* moves only to a clearly faster server, *Fastest* chases the best ping, *On failure*
-never optimises, *Manual* stays where you put it. Switching the strategy re-chooses the server by its rules.
+never optimises, *Manual* stays where you put it (and says so when that server stops answering, with a one-tap way
+back to automatic choice). Switching the strategy re-chooses the server by its rules. A move to a faster server
+waits until the screen turns off, so it never interrupts what you are doing; only a large gain moves sooner, at a
+pause in traffic.
+*Stable* also weighs each server's kind of connection, read from its configuration: kinds that tend to break
+once in use count as slower — XHTTP sending everything in one stream (it can stall on large uploads while pings
+still pass), UDP transports, everything in one connection (gRPC, mux), unwrapped Shadowsocks, TLS without a
+browser fingerprint. They are still used when nothing better answers.
+
+**Limited network.** When no server answers but the phone still reaches the domain zone's own sites, the app
+recognises a limited network: it says so (status, notification, a band on the charts), keeps traffic going
+without the tunnel (or paused, as you chose), and checks servers less often — the ones that answered in such a
+network every 30 seconds, all of them after 1, 2, then every 5 minutes — instead of draining the battery.
+
+**Servers of one country.** A globe button limits everything — choice, checks, failover — to the servers of the
+countries you pick (by the server's name, else its address); the list can be sorted by name, by how often you
+picked a country or by how reliably its servers answer.
 
 **Protocols.** VLESS (Reality, Vision, XHTTP, gRPC, WebSocket, HTTPUpgrade, mKCP), VMess, Trojan, Shadowsocks
 (incl. 2022), Hysteria2 (obfs, port hopping), WireGuard, SOCKS5 and any Xray JSON config, including chains through
@@ -74,7 +95,8 @@ never optimises, *Manual* stays where you put it. Switching the strategy re-choo
 **Subscriptions.** base64, plain lists of links or Xray JSON; name, traffic and expiry from the provider's
 headers; automatic updates on the provider's schedule. If the provider can't be reached directly, the
 subscription is downloaded through one of your servers. Broken links and failed downloads are explained in plain
-words.
+words. Each provider gets a device id of its own, so providers can't tell they serve the same phone; the phone's
+model is sent only if you allow it.
 
 **Groups.** Put servers and whole subscriptions into folders, drag to reorder, hide servers, rename them.
 *Auto-visibility* can keep just the servers that work best for you in rotation; *auto-sort* shows them in the order
@@ -82,29 +104,46 @@ they are checked.
 
 **Routing.** Ready-made domain zones — a region's sites (in its domains and elsewhere), its network addresses and
 the apps that work there only without a tunnel — go direct, everything else through the server; a second mode
-sends only the sites on the zones' lists through the server. The lists refresh themselves every few days (only the
-changed categories are downloaded). Apps you choose work without the tunnel and don't see it. Your own lists of
-sites in either direction, an optional ad filter.
+sends only the sites on the zones' lists through the server. The app ships no lists: it downloads them on the
+first start (until then the zones simply take no part) and keeps them fresh by itself (only the changed categories
+are downloaded). It installs only versions of the lists the project has reviewed and signed, and leaves out any
+entry that would reach far beyond its zone. Apps you choose work without the tunnel and don't see it. Your own
+lists of sites in either direction, an optional ad filter. **Your own zones**: lists of sites, addresses and apps
+for either direction, typed in or loaded from a file (plain lists, hosts files, Clash / Surge rules, AdBlock
+lists, sing-box rule sets, Xray `.dat` lists); the app shows what of a zone doesn't apply and why.
 
 **Battery saving mode.** One button, or together with the phone's battery saver: checks and rescans become rarer
-and smarter, and among working servers the protocols that cost the core less energy are preferred — measured on
-your phone. The expected saving is shown on the button.
+and smarter, and among working servers the cheaper ones are preferred: by the core's CPU per protocol (measured
+on your phone) and by what wakes the radio while the phone is idle (keepalives, health checks). The expected saving
+is shown on the button.
+
+**Notification.** None, only while traffic is not going through a server (searching, without a server, no or a
+limited network — it can be swiped away), or always.
+
+**Updates.** The app checks for a new release once a day and offers it in Settings; the download is checked against
+the release's checksums and its signature before the system installer opens.
 
 **Statistics.** Availability and ping of every server, connection states over time, failures and switches,
 traffic, per-subscription views. A separate tab shows what the app itself does and costs: network actions, CPU
 time, an estimate of its battery use with error margins (from the phone's own power profile), and optional real
 current measurement. Everything can be exported to CSV.
 
-**Quick Settings and status bar.** A Quick Settings tile (long press opens the app) and an optional status-bar
-icon.
+**Quick Settings and status bar.** A Quick Settings tile that follows the connection live (connecting, server
+and ping, direct…; long press opens the app); the notification puts the state icon into the status bar.
 
 **Sharing.** A server, a group, a subscription or everything — as plain links any client understands, or in the
 app's own format that also keeps groups and hidden servers. Import by pasting, camera QR or a QR code in a
 picture.
 
-**Privacy and security.** App data and logs are encrypted at rest (AES-GCM, key in the Android Keystore);
-cleartext HTTP is disabled; logs never contain keys or full subscription URLs; no local proxy is left open for
-other apps.
+**Privacy and security.** App data, logs and statistics are encrypted at rest (AES-GCM / SQLCipher, key in the
+Android Keystore); cleartext HTTP is disabled; DNS of the apps in the tunnel goes through the server; servers whose
+traffic isn't encrypted or whose certificate isn't checked are marked (and can be left out); "pause traffic" holds
+in every case, also with no servers at all; country lookups go through your own servers, never from your address;
+automatic checks start one by one rather than all at once, and *Careful checks* limit them to a few servers;
+links shared from the app are kept out of screenshots and marked sensitive on the clipboard, and sharing can ask
+for the screen lock; logs never contain keys or full subscription URLs, and the detailed log can hide server
+addresses when shared; no local proxy is left open for other apps. The core and every build dependency are pinned
+by checksum.
 
 ## Install
 
@@ -122,14 +161,17 @@ JDK 17 and the Android SDK (platform 37):
 ```
 
 The core (`libv2ray.aar` from [AndroidLibXrayLite](https://github.com/2dust/AndroidLibXrayLite)) is downloaded on
-the first build. A signed release build needs `keystore.properties` (`storeFile`, `storePassword`, `keyAlias`,
-`keyPassword`) in the project root. The routing lists bundled with the app are rebuilt with
-`python3 scripts/build_geo.py` from the sources named in `app/src/main/assets/regions.json`.
+the first build and checked against the SHA-256 pinned in `app/build.gradle.kts`; Gradle checks every dependency
+against `gradle/verification-metadata.xml`. A signed release build needs `keystore.properties` (`storeFile`,
+`keyAlias`) in the project root and the passwords there, in `BORDERLESS_STORE_PASSWORD` / `BORDERLESS_KEY_PASSWORD`
+or in the macOS Keychain (service `borderless-release`, accounts `store` / `key`). The routing lists are not part
+of the build: the app downloads them from the sources named in `app/src/main/assets/regions.json`, as approved in
+the signed [`lists/manifest.json`](lists/manifest.json).
 
 ## License
 
 Border(less)'s own code: [PolyForm Noncommercial License 1.0.0](LICENSE) — free to use, study, change and share
 for any noncommercial purpose; selling it or using it commercially is not allowed
-([Russian translation](LICENSE.ru.md)). Components it includes keep their own licenses (Xray-core MPL-2.0,
+([Russian translation](LICENSE.ru.md)). Components it includes or downloads keep their own licenses (Xray-core MPL-2.0,
 libv2ray LGPL-3.0, routing lists GPL-3.0, fonts SIL OFL, and others): see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

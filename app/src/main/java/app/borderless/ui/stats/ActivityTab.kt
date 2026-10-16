@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -62,6 +63,8 @@ private class ActivityData(
     val dataStart: Long,
     val zones: Zones,
     val protocols: Map<String, ProtocolCost.Measured>,
+    /** Each class's core CPU against all classes at the same traffic, with its number of windows. */
+    val protocolsRelative: Map<String, Pair<Double, Int>>,
 ) {
     /** Everything shaded behind the activity charts (see [stateBands]). */
     val bands: List<Band> by lazy { stateBands(power) + bands(segments, maxOf(from, dataStart), to) + zones.eco }
@@ -79,6 +82,7 @@ private suspend fun loadActivity(context: Context, p: Period, custom: Pair<Long,
         StatsMath.segments(StatsDb.phases(from, to), from, to, to), StatsDb.firstTimestamp() ?: to,
         zones,
         StatsDb.coreCostByClass(from, to),
+        ProtocolCost.relative(StatsDb.coreCostWindows(from, to)),
     )
 }
 
@@ -104,7 +108,7 @@ internal fun ActivityTab(period: Period, custom: Pair<Long, Long>?, tick: Int) {
         item { ActivityTiles(context, d) }
         item { EnergyCard(context, d) }
         item { CostCard(context, d.totals, d.measured) }
-        item { ProtocolsCard(context, d.protocols) }
+        item { ProtocolsCard(context, d.protocols, d.protocolsRelative) }
         item { NetworkChart(context, d) }
         if (d.power.size >= 2) item { CpuChart(context, d) }
         item { Conditions(context, d.summary, ActivityMath.hoursIn(d.power, d.zones.eco.map { it.start to it.end })) }
@@ -373,7 +377,7 @@ private fun groupLabel(first: Activity.Kind): Int = when (first) {
 @Composable
 private fun CostCard(context: Context, totals: Map<String, StatsDb.ActivityTotal>, measured: List<StatsDb.MeasuredKind>) {
     val real = measured.associateBy { it.kind }
-    val rows = Activity.Kind.entries.filter { it != Activity.Kind.CORE_BASE && it != Activity.Kind.TRACKING }
+    val rows = Activity.Kind.entries.filter { it != Activity.Kind.CORE_BASE }
         .mapNotNull { k -> totals[k.name]?.takeIf { it.n > 0 && it.mj > 0 }?.let { k to it } }
     if (rows.isEmpty()) return
     val col = 82.dp
@@ -388,7 +392,7 @@ private fun CostCard(context: Context, totals: Map<String, StatsDb.ActivityTotal
                     Column(Modifier.weight(1f)) {
                         Text(stringResource(kind.label), fontSize = 13.sp, color = Palette.text)
                         Text(
-                            stringResource(R.string.act_cost_n, Units.count(t.n)) + (m?.let { " · " + stringResource(R.string.act_measured_n, it.count) } ?: ""),
+                            androidx.compose.ui.res.pluralStringResource(R.plurals.act_cost_n, t.n.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), Units.count(t.n)) + (m?.let { " · " + stringResource(R.string.act_measured_n, it.count) } ?: ""),
                             fontSize = 11.sp, color = Palette.textMuted,
                         )
                     }
@@ -400,20 +404,25 @@ private fun CostCard(context: Context, totals: Map<String, StatsDb.ActivityTotal
                     )
                 }
             }
+            // The measured column stays empty without the diagnostic switch: say where it is.
+            if (!app.borderless.data.Repo.settings.collectAsState().value.measureCurrent) {
+                Text(stringResource(R.string.act_cost_enable), fontSize = 12.sp, color = Palette.text)
+            }
             Text(stringResource(R.string.act_cost_note), fontSize = 12.sp, color = Palette.textMuted)
         }
     }
 }
 
 /**
- * The core's own work per protocol class on this phone: CPU time per GB of traffic, relative to the
- * cheapest class (the battery saving mode prefers cheaper ones among working servers).
+ * The core's own work per protocol class on this phone, compared at the same traffic ([ProtocolCost.relative]),
+ * relative to the cheapest class (the battery saving mode prefers cheaper ones among working servers).
  */
 @Composable
-private fun ProtocolsCard(context: Context, measured: Map<String, ProtocolCost.Measured>) {
-    val rows = measured.filter { it.value.mb >= 1 }.entries.sortedBy { it.value.cpuMsPerMb }
+private fun ProtocolsCard(context: Context, measured: Map<String, ProtocolCost.Measured>, relative: Map<String, Pair<Double, Int>>) {
+    val rows = measured.filter { it.value.mb >= 1 }.entries.sortedBy { relative[it.key]?.first ?: Double.MAX_VALUE }
     if (rows.isEmpty()) return
-    val cheapest = rows.filter { it.value.mb >= ProtocolCost.MIN_MB }.minOfOrNull { it.value.cpuMsPerMb }
+    val usable = relative.filterValues { it.second >= ProtocolCost.MIN_WINDOWS }
+    val cheapest = usable.values.minOfOrNull { it.first }?.takeIf { it > 0 && usable.size >= 2 }
     val col = 82.dp
     Card(stringResource(R.string.act_protocols), header = {
         Text(stringResource(R.string.act_proto_traffic), fontSize = 11.sp, color = Palette.textMuted, textAlign = TextAlign.End, modifier = Modifier.width(col).alignByBaseline())
@@ -421,18 +430,19 @@ private fun ProtocolsCard(context: Context, measured: Map<String, ProtocolCost.M
     }) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             rows.forEach { (key, m) ->
+                val rel = cheapest?.let { c -> usable[key]?.let { it.first / c } }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(key, fontSize = 13.sp, color = Palette.text)
-                        val rel = cheapest?.takeIf { m.mb >= ProtocolCost.MIN_MB && it > 0 }?.let { m.cpuMsPerMb / it }
                         Text(
-                            rel?.let { stringResource(R.string.act_proto_rel, "%.2f".format(it)) } ?: stringResource(R.string.act_proto_little),
+                            if (rel != null) androidx.compose.ui.res.pluralStringResource(R.plurals.act_proto_windows, m.windows, Units.count(m.windows.toLong()))
+                            else stringResource(R.string.act_proto_little),
                             fontSize = 11.sp, color = Palette.textMuted,
                         )
                     }
                     Text(formatBytes(context, m.bytes), fontSize = 13.sp, color = Palette.textSecondary, textAlign = TextAlign.End, modifier = Modifier.width(col))
                     Text(
-                        Units.seconds(m.cpuMsPerMb * 1024 / 1000), fontSize = 13.sp,
+                        rel?.let { "×%.2f".format(it) } ?: "—", fontSize = 13.sp,
                         fontWeight = FontWeight.Bold, color = Palette.text, textAlign = TextAlign.End, modifier = Modifier.width(col),
                     )
                 }

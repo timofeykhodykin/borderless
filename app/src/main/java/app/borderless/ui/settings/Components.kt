@@ -21,7 +21,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material3.AlertDialog
+import app.borderless.ui.AppAlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -61,13 +61,95 @@ fun ScreenScaffold(title: String, onBack: () -> Unit, actions: @Composable () ->
     }
 }
 
+/**
+ * A settings search in progress: rows show themselves only if they match (see [matches]); [context] is the
+ * page and section they are drawn in. Provided by the settings search through [LocalSettingsQuery].
+ */
+class SettingsQuery(val words: List<String>, val context: String = "") {
+    /**
+     * Every word of the query is found in [texts] or in the row's context, and at least one in [texts]
+     * themselves (so a word that names the page doesn't bring up all of its rows).
+     */
+    fun matches(vararg texts: String?): Boolean {
+        val own = normalize(texts.filterNotNull().joinToString("\n"))
+        val all = normalize(context) + "\n" + own
+        return words.isNotEmpty() && words.all { it in all } && words.any { it in own }
+    }
+
+    fun inside(title: String) = SettingsQuery(words, context + "\n" + title)
+
+    companion object {
+        /** Lower case, "ё" as "е", typographic quotes and dots dropped: what is typed matches what is shown. */
+        fun normalize(text: String): String = text.lowercase().replace('ё', 'е').replace(Regex("[«»“”\"„…]"), "")
+
+        fun of(query: String): SettingsQuery? =
+            normalize(query).split(Regex("\\s+")).filter { it.isNotEmpty() }.takeIf { it.isNotEmpty() }?.let { SettingsQuery(it) }
+    }
+}
+
+val LocalSettingsQuery = androidx.compose.runtime.compositionLocalOf<SettingsQuery?> { null }
+
+/** [text] with the query's words marked, when a search is on. */
+@Composable
+private fun marked(text: String): androidx.compose.ui.text.AnnotatedString {
+    val q = LocalSettingsQuery.current ?: return androidx.compose.ui.text.AnnotatedString(text)
+    // normalize keeps the length except for dropped quotes and dots: match on a lower-cased copy instead.
+    val lower = text.lowercase().replace('ё', 'е')
+    return androidx.compose.ui.text.buildAnnotatedString {
+        append(text)
+        q.words.forEach { w ->
+            var i = lower.indexOf(w)
+            while (i >= 0 && w.isNotEmpty()) {
+                addStyle(androidx.compose.ui.text.SpanStyle(background = Palette.accentContainer), i, i + w.length)
+                i = lower.indexOf(w, i + w.length)
+            }
+        }
+    }
+}
+
+/**
+ * Stacks [header] over [content], or takes no room at all when [content] turned out empty (a search hid
+ * every row in it); then [empty] is shown instead, if given.
+ */
+@Composable
+fun CollapseIfEmpty(header: @Composable () -> Unit = {}, empty: @Composable () -> Unit = {}, content: @Composable () -> Unit) {
+    androidx.compose.ui.layout.Layout(contents = listOf(header, content, empty)) { (h, c, e), constraints ->
+        val loose = constraints.copy(minHeight = 0)
+        val body = c.map { it.measure(loose) }
+        val shown = if (body.all { it.height == 0 }) e.map { it.measure(loose) } else h.map { it.measure(loose) } + body
+        val width = if (shown.isEmpty()) 0 else constraints.maxWidth
+        layout(width, shown.sumOf { it.height }) {
+            var y = 0
+            shown.forEach { it.place(0, y); y += it.height }
+        }
+    }
+}
+
 @Composable
 fun Section(title: String, inset: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
+    val q = LocalSettingsQuery.current
+    if (q != null) {
+        // While searching: only the matching rows, and nothing at all when none match.
+        androidx.compose.runtime.CompositionLocalProvider(LocalSettingsQuery provides q.inside(title)) {
+            CollapseIfEmpty(header = { SectionTitle(title, inset) }) { SectionCard(inset, content) }
+        }
+        return
+    }
+    SectionTitle(title, inset)
+    SectionCard(inset, content)
+}
+
+@Composable
+private fun SectionTitle(title: String, inset: Boolean) {
     // [inset] false: the container already has side padding (e.g. a padded list).
     Text(
         title, fontSize = 14.5.sp, fontWeight = FontWeight.Bold, color = Palette.accentStrong,
         modifier = Modifier.padding(start = if (inset) 20.dp else 4.dp, top = 24.dp, bottom = 8.dp),
     )
+}
+
+@Composable
+private fun SectionCard(inset: Boolean, content: @Composable ColumnScope.() -> Unit) {
     Column(
         Modifier
             .padding(horizontal = if (inset) 16.dp else 0.dp)
@@ -78,8 +160,10 @@ fun Section(title: String, inset: Boolean = true, content: @Composable ColumnSco
     )
 }
 
+/** [search]: more text the row is found by (its value, its choices), besides the title and subtitle. */
 @Composable
-private fun RowBase(title: String, subtitle: String?, onClick: (() -> Unit)?, trailing: @Composable () -> Unit) {
+private fun RowBase(title: String, subtitle: String?, onClick: (() -> Unit)?, search: String? = null, trailing: @Composable () -> Unit) {
+    if (LocalSettingsQuery.current?.matches(title, subtitle, search) == false) return
     Row(
         Modifier
             .fillMaxWidth()
@@ -89,18 +173,21 @@ private fun RowBase(title: String, subtitle: String?, onClick: (() -> Unit)?, tr
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 17.sp, color = Palette.text)
-            if (!subtitle.isNullOrEmpty()) Text(subtitle, fontSize = 14.sp, color = Palette.textSecondary, modifier = Modifier.padding(top = 2.dp))
+            Text(marked(title), fontSize = 17.sp, color = Palette.text)
+            if (!subtitle.isNullOrEmpty()) Text(marked(subtitle), fontSize = 14.sp, color = Palette.textSecondary, modifier = Modifier.padding(top = 2.dp))
         }
         Spacer(Modifier.width(10.dp))
         trailing()
     }
 }
 
-/** [enabled] false: shown off-limits (its subtitle should say why). */
+/**
+ * [enabled] false: shown off-limits (its subtitle should say why). [onClick]: the row itself does this (e.g. opens
+ * what it switches) and only the switch switches.
+ */
 @Composable
-fun SwitchRow(title: String, subtitle: String? = null, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) =
-    RowBase(title, subtitle, if (enabled) ({ onChange(!checked) }) else null) {
+fun SwitchRow(title: String, subtitle: String? = null, checked: Boolean, enabled: Boolean = true, onClick: (() -> Unit)? = null, onChange: (Boolean) -> Unit) =
+    RowBase(title, subtitle, onClick ?: if (enabled) ({ onChange(!checked) }) else null) {
         Switch(
             checked = checked, onCheckedChange = onChange, enabled = enabled,
             colors = SwitchDefaults.colors(
@@ -152,15 +239,19 @@ fun NavRow(title: String, subtitle: String? = null, onClick: () -> Unit) =
         Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = Palette.textMuted)
     }
 
+/** An explanation inside a section's card, spaced like a row's text (also when it opens or closes the card). */
 @Composable
 fun InfoNote(text: String) {
-    Text(text, fontSize = 13.5.sp, color = Palette.textMuted, modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp))
+    if (LocalSettingsQuery.current?.matches(text) == false) return
+    Text(marked(text), fontSize = 13.5.sp, color = Palette.textMuted, modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp))
 }
 
+/** A value to read, not to change; [valueColor] draws attention to it (e.g. errors waiting to be reported). */
 @Composable
-fun InfoRow(title: String, value: String) = RowBase(title, null, null) {
-    Text(value, fontSize = 15.sp, color = Palette.textSecondary)
-}
+fun InfoRow(title: String, value: String, subtitle: String? = null, valueColor: androidx.compose.ui.graphics.Color = Palette.textSecondary) =
+    RowBase(title, subtitle, null, search = value) {
+        Text(value, fontSize = 15.sp, color = valueColor)
+    }
 
 @Composable
 fun NumberRow(
@@ -170,13 +261,14 @@ fun NumberRow(
     onChange: (Int) -> Unit,
 ) {
     var editing by remember { mutableStateOf(false) }
-    RowBase(title, subtitle, { editing = true }) {
-        Text(display?.invoke(value) ?: "$value$suffix", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Palette.accentStrong)
+    val shown = display?.invoke(value) ?: "$value$suffix"
+    RowBase(title, subtitle, { editing = true }, search = shown) {
+        Text(shown, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Palette.accentStrong)
     }
     if (editing) {
         var text by remember { mutableStateOf(value.toString()) }
         val parsed = text.toIntOrNull()?.takeIf { it in range }
-        AlertDialog(
+        AppAlertDialog(
             onDismissRequest = { editing = false },
             containerColor = Palette.background,
             title = { Text(title, fontSize = 18.sp) },
@@ -202,7 +294,7 @@ fun TextRow(title: String, value: String, multiline: Boolean = false, hint: Stri
     RowBase(title, value.ifEmpty { emptyText ?: stringResource(R.string.not_set) }.let { if (multiline) it.lines().take(3).joinToString(", ") else it }, { editing = true }) {}
     if (editing) {
         var text by remember { mutableStateOf(value) }
-        AlertDialog(
+        AppAlertDialog(
             onDismissRequest = { editing = false },
             containerColor = Palette.background,
             title = { Text(title, fontSize = 18.sp) },
@@ -225,9 +317,9 @@ fun TextRow(title: String, value: String, multiline: Boolean = false, hint: Stri
 @Composable
 fun <T> ChoiceRow(title: String, value: T, options: List<Pair<T, String>>, onChange: (T) -> Unit) {
     var open by remember { mutableStateOf(false) }
-    RowBase(title, options.firstOrNull { it.first == value }?.second, { open = true }) {}
+    RowBase(title, options.firstOrNull { it.first == value }?.second, { open = true }, search = options.joinToString("\n") { it.second }) {}
     if (open) {
-        AlertDialog(
+        AppAlertDialog(
             onDismissRequest = { open = false },
             containerColor = Palette.background,
             title = { Text(title, fontSize = 18.sp) },

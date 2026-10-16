@@ -1,3 +1,4 @@
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -6,22 +7,42 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
-// Xray core packaged for Android by the v2rayNG authors (gomobile build of Xray-core).
-val xrayCoreVersion = "v26.9.30"
+// Xray core packaged for Android by the v2rayNG authors (gomobile build of Xray-core). It runs inside the app and
+// handles all traffic and server credentials, and release assets on GitHub can be replaced: its SHA-256 is pinned
+// here and checked on every build (a mismatch fails it). On a version bump take the hash from a second source.
+val xrayCoreVersion = "v26.10.10"
+val xrayCoreSha256 = "15db760bfbc24c0492ee997784b48a7b5e1bc5032950d617cd252fc2195f7ac7"
 val coreAar = file("libs/libv2ray-$xrayCoreVersion.aar")
 
+fun sha256(f: File): String {
+    val md = MessageDigest.getInstance("SHA-256")
+    f.inputStream().use { input ->
+        val buf = ByteArray(1 shl 16)
+        while (true) { val n = input.read(buf); if (n < 0) break; md.update(buf, 0, n) }
+    }
+    return md.digest().joinToString("") { "%02x".format(it) }
+}
+
 val downloadCore = tasks.register("downloadCore") {
-    description = "Downloads libv2ray.aar (Xray-core) if it is missing"
+    description = "Downloads libv2ray.aar (Xray-core) if it is missing and checks its pinned SHA-256"
     outputs.file(coreAar)
-    onlyIf { !coreAar.exists() }
     doLast {
-        coreAar.parentFile.mkdirs()
-        coreAar.parentFile.listFiles { f -> f.name.startsWith("libv2ray") }?.forEach { it.delete() }
-        val url = "https://github.com/2dust/AndroidLibXrayLite/releases/download/$xrayCoreVersion/libv2ray.aar"
-        logger.lifecycle("Downloading $url")
-        val tmp = File(coreAar.path + ".part")
-        uri(url).toURL().openStream().use { input -> tmp.outputStream().use { input.copyTo(it) } }
-        tmp.renameTo(coreAar)
+        if (!coreAar.exists()) {
+            coreAar.parentFile.mkdirs()
+            coreAar.parentFile.listFiles { f -> f.name.startsWith("libv2ray") }?.forEach { it.delete() }
+            val url = "https://github.com/2dust/AndroidLibXrayLite/releases/download/$xrayCoreVersion/libv2ray.aar"
+            logger.lifecycle("Downloading $url")
+            val tmp = File(coreAar.path + ".part")
+            uri(url).toURL().openStream().use { input -> tmp.outputStream().use { input.copyTo(it) } }
+            val got = sha256(tmp)
+            if (got != xrayCoreSha256) {
+                tmp.delete()
+                throw GradleException("libv2ray.aar $xrayCoreVersion: SHA-256 $got, expected $xrayCoreSha256 — not using it")
+            }
+            tmp.renameTo(coreAar)
+        }
+        val have = sha256(coreAar)
+        if (have != xrayCoreSha256) throw GradleException("${coreAar.name}: SHA-256 $have, expected $xrayCoreSha256 — delete it or fix the pin")
     }
 }
 tasks.named("preBuild") { dependsOn(downloadCore) }
@@ -45,6 +66,23 @@ val keystoreProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
+/** A release is being built (the release signing data is needed only then). */
+val releaseRequested = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
+
+/**
+ * A signing password: from keystore.properties if it is still written there (the old way), else the environment
+ * (BORDERLESS_STORE_PASSWORD / BORDERLESS_KEY_PASSWORD), else the macOS Keychain (generic password, service
+ * "borderless-release", account "store" / "key"). Asked only when a release is built.
+ */
+fun signingPassword(prop: String, env: String, account: String): String? =
+    keystoreProps.getProperty(prop)?.takeIf { it.isNotEmpty() }
+        ?: System.getenv(env)?.takeIf { it.isNotEmpty() }
+        ?: if (!releaseRequested) null else runCatching {
+            val p = ProcessBuilder("security", "find-generic-password", "-s", "borderless-release", "-a", account, "-w")
+                .redirectErrorStream(false).start()
+            p.inputStream.bufferedReader().readText().trim().takeIf { p.waitFor() == 0 && it.isNotEmpty() }
+        }.getOrNull()
+
 android {
     namespace = "app.borderless"
     compileSdk = 37
@@ -55,19 +93,19 @@ android {
         targetSdk = 36
         // versionName: MAJOR.MINOR.PATCH[-beta.N | -rc.N]; versionCode: (MAJOR*10000 + MINOR*100 + PATCH)*100 + N,
         // with N = 99 for the final release of that version (so every build is newer than the one before).
-        versionCode = 1000099
-        versionName = "1.0.0"
+        versionCode = 2000099
+        versionName = "2.0.0"
         buildConfigField("String", "XRAY_CORE_VERSION", "\"$xrayCoreVersion\"")
         buildConfigField("String[]", "UI_LANGUAGES", uiLanguages.joinToString(", ", "{", "}") { "\"${languageTag(it)}\"" })
     }
 
     signingConfigs {
-        if (keystoreProps.isNotEmpty()) {
+        if (keystoreProps.getProperty("storeFile") != null) {
             create("release") {
                 storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
-                storePassword = keystoreProps.getProperty("storePassword")
+                storePassword = signingPassword("storePassword", "BORDERLESS_STORE_PASSWORD", "store")
                 keyAlias = keystoreProps.getProperty("keyAlias")
-                keyPassword = keystoreProps.getProperty("keyPassword")
+                keyPassword = signingPassword("keyPassword", "BORDERLESS_KEY_PASSWORD", "key")
             }
         }
     }
@@ -85,7 +123,12 @@ android {
             isMinifyEnabled = false
             isShrinkResources = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            // Never a "release" signed with the debug key: without the release key (or its passwords) it fails.
+            val release = signingConfigs.findByName("release")
+            if (releaseRequested && (release == null || release.storePassword == null || release.keyPassword == null)) {
+                throw GradleException("Release signing is not configured (keystore.properties + passwords from the file, environment or Keychain)")
+            }
+            signingConfig = release
         }
     }
 
@@ -108,6 +151,10 @@ android {
         // for the app is generated from the same resources (res/resources.properties names the default).
         localeFilters += uiLanguages
         generateLocaleConfig = true
+        // libv2ray brings its own full routing lists as assets; the app downloads the categories it needs
+        // (core/GeoLists) and ships none.
+        ignoreAssetsPattern = "!geoip.dat:!geosite.dat:!geoip-only-cn-private.dat:" +
+            "!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~"
     }
 
     buildFeatures {
@@ -146,6 +193,9 @@ dependencies {
     implementation(libs.reorderable)
     implementation(libs.zxing.core)
     implementation(libs.zxing.embedded) { isTransitive = false }
+    // Encrypted statistics database (SECURITY.md S16).
+    implementation(libs.sqlcipher)
+    implementation(libs.androidx.sqlite)
 
     testImplementation(libs.junit)
 }

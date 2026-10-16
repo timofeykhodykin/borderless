@@ -98,13 +98,13 @@ object ActivityMath {
         val parts = listOf(
             listOf(Activity.Kind.SCAN_BACKGROUND), listOf(Activity.Kind.SCAN_OPEN), listOf(Activity.Kind.SCAN_MANUAL, Activity.Kind.SCAN_STRATEGY), listOf(Activity.Kind.SCAN_ENGINE),
             listOf(Activity.Kind.PING_RIDE), listOf(Activity.Kind.PING_PERIODIC),
-            listOf(Activity.Kind.PING_STALL, Activity.Kind.PING_VERIFY, Activity.Kind.PING_FAILED),
+            listOf(Activity.Kind.PING_STALL, Activity.Kind.PING_VERIFY, Activity.Kind.PING_FAILED, Activity.Kind.PING_WAKE),
             listOf(Activity.Kind.PROBE_RESCUE),
-            listOf(Activity.Kind.SUB_UPDATE, Activity.Kind.GEO_UPDATE, Activity.Kind.COUNTRY, Activity.Kind.DOH, Activity.Kind.NET_CHECK),
+            // Subscriptions with the checks of the servers they add, and internet checks.
+            listOf(Activity.Kind.SUB_UPDATE, Activity.Kind.SCAN_NEW, Activity.Kind.NET_CHECK),
             listOf(Activity.Kind.CORE_START, Activity.Kind.FILE_WRITE),
             // What collecting statistics and logs costs by itself.
-            listOf(Activity.Kind.DB_COMMIT, Activity.Kind.STATS_SAMPLE, Activity.Kind.LOG_WRITE, Activity.Kind.TRACKING),
-            listOf(Activity.Kind.CURRENT_METER),
+            listOf(Activity.Kind.DB_COMMIT, Activity.Kind.STATS_SAMPLE, Activity.Kind.LOG_WRITE, Activity.Kind.CURRENT_METER),
             listOf(Activity.Kind.UI_BASE),
             listOf(Activity.Kind.CORE_BASE),
         )

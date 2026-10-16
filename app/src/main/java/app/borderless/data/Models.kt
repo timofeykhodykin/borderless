@@ -68,6 +68,12 @@ data class Subscription(
      * provider sends (an update doesn't change the user's name either).
      */
     val customName: String? = null,
+    /**
+     * The device id its provider gets (`x-hwid`): one per provider host ([Repo.deviceIdFor]), so providers can't link
+     * one person across them (SECURITY.md S10). Empty for subscriptions added before: they keep the install's single
+     * id, which their panel already counts as this device.
+     */
+    val hwid: String = "",
 )
 
 /** Latency history of a server. `ms == null` means the last probe failed. */
@@ -81,16 +87,27 @@ data class PingRecord(
     val failStreak: Int = 0,
     /** When a check of all servers (or of this one) last measured it; the current server's own pings don't count. */
     val probedAt: Long = 0,
+    /** How long the last successful health checks through the running core took in all, ms (newest last, ≤ 5). */
+    val checks: List<Int> = emptyList(),
+    /** The last results, success or not (newest last, ≤ 5): a server that failed lately isn't one to move to for speed. */
+    val outcomes: List<Boolean> = emptyList(),
 ) {
     val ok: Boolean get() = ms != null
 
-    /** Median of recent successes; smoother than a single sample for switching decisions. */
+    /** Median of recent successes; smoother than a single sample for switching decisions. Null after a failure. */
     val typical: Int?
-        get() = if (ms == null) null else recent.takeLast(3).sorted().let { it[it.size / 2] }
+        get() = if (ms == null) null else usual
+
+    /** Median of the last 3 successes whatever the last result was (a single failure doesn't make it unknown). */
+    val usual: Int?
+        get() = recent.takeLast(3).sorted().takeIf { it.isNotEmpty() }?.let { it[it.size / 2] }
 
     fun with(result: Int?, now: Long = System.currentTimeMillis()): PingRecord =
-        if (result != null) PingRecord(result, now, (recent + result).takeLast(5), now, 0)
-        else copy(ms = null, at = now, failStreak = failStreak + 1)
+        if (result != null) copy(ms = result, at = now, recent = (recent + result).takeLast(5), lastOkAt = now, failStreak = 0, outcomes = (outcomes + true).takeLast(5))
+        else copy(ms = null, at = now, failStreak = failStreak + 1, outcomes = (outcomes + false).takeLast(5))
+
+    /** Good enough to move to for speed: ≥ 3 successes to take a median of and no failure among the last 5 results. */
+    val steady: Boolean get() = ok && recent.size >= 3 && outcomes.takeLast(5).all { it }
 }
 
 /** The last check of servers among these results (data from before [PingRecord.probedAt]: the newest result). */
@@ -105,6 +122,13 @@ enum class RoutingMode {
     /** Only the sites on the chosen zones' lists (and the user's own list) go through the proxy. */
     LISTED_ONLY,
 }
+
+/**
+ * The tunnel's notification: none at all, only while traffic is not going through a server (searching, without a
+ * server, paused, no network, limited network), or always (it also puts the state icon into the status bar).
+ */
+@Serializable
+enum class NotifyMode { OFF, UNCLEAR, ALWAYS }
 
 /** What happens while no server works: traffic goes direct, or is paused (nothing leaves the phone). */
 @Serializable
@@ -165,14 +189,32 @@ data class AppSettings(
      * the user's visibility while on; the user's `disabled` flags are kept and come back when it is off).
      */
     val autoActive: Boolean = false,
+    /**
+     * Servers of these countries only (the map button on the main screen): ISO codes, [Countries.UNKNOWN] for the
+     * servers whose country isn't known; empty = any country. While set, their servers take part unless hidden by
+     * hand; auto-visibility doesn't apply ([Repo.isActive]). Changed through `core.CountryFilter`.
+     */
+    val countries: Set<String> = emptySet(),
+    /** "Ping all" with the connection on moves to the best server (else the strategy decides, as after a rescan). */
+    val pingAllSwitches: Boolean = true,
+    /** Servers without encryption on the way or without a certificate check take no part (SECURITY.md S7). */
+    val avoidInsecure: Boolean = false,
+    /** How the list of countries is sorted. */
+    val countrySort: CountrySort = CountrySort.NAME,
+    /** Internal: Manual was in effect when the countries were chosen (its server outside them); back when they end. */
+    val strategyBeforeCountry: Strategy? = null,
+    /** Internal: the server in use when the countries were chosen (On failure goes back to it when they end). */
+    val serverBeforeCountry: String? = null,
     /** Show servers as "<group> #N" (position in the user's order within the group) instead of their names. */
     val genericNames: Boolean = false,
     /** With [genericNames]: servers the user renamed keep their own name instead of "Group #N". */
     val customOverGeneric: Boolean = true,
     /** Colour scheme of the interface (`ui.theme.Schemes`), by id. */
     val palette: String = "coral",
-    /** Show the state icon in the status bar (needs a silent notification); off = no notification at all. */
+    /** 1.0.0's "status bar icon" switch: read only to derive [notify] when [notifyMode] was never set. */
     val statusIcon: Boolean = false,
+    /** The notification mode chosen by the user (null = never chosen: see [notify]). */
+    val notifyMode: NotifyMode? = null,
     // --- battery saving mode (see app.borderless.core.Eco)
     /** The app's own battery saving mode is on (button on the main screen, or the phone's saver). */
     val ecoOn: Boolean = false,
@@ -196,7 +238,7 @@ data class AppSettings(
     val rescanIntervalMin: Int = 10,
     val switchGainPercent: Int = 30,
     val switchGainMs: Int = 60,
-    val minStayMin: Int = 5,
+    val minStayMin: Int = 20,
     val retryIntervalSec: Int = 30,
     val noServerAction: NoServerAction = NoServerAction.DIRECT,
     val pauseScansScreenOff: Boolean = true,
@@ -244,6 +286,12 @@ data class AppSettings(
      * devices by it). Created on first use; empty until then.
      */
     val deviceId: String = "",
+    /** Subscription requests also say the phone's model and Android version (some panels list devices by them). */
+    val sendDeviceModel: Boolean = false,
+    /** Sharing servers / subscriptions and the statistics export ask for the phone's screen lock first. */
+    val confirmShare: Boolean = false,
+    /** Automatic scans check only the server in use and the next few; no hidden servers (SECURITY.md S9). */
+    val carefulScans: Boolean = false,
 
     // --- state
     val lastServerId: String? = null,
@@ -253,6 +301,8 @@ data class AppSettings(
     // --- diagnostics
     /** Detailed log: every probe, every routing decision of the core. */
     val verboseLog: Boolean = false,
+    /** When the detailed core log was turned on (0: unknown); it turns itself off a day later (SECURITY.md S12). */
+    val verboseSince: Long = 0,
     /** How long statistics are kept. */
     val statsDays: Int = 180,
     /** The statistics screens' custom range (0, 0 = none chosen): kept until the user picks another period. */
@@ -273,11 +323,24 @@ data class AppSettings(
 
     companion object {
         /** Settings of a new install: every domain zone on. */
-        fun fresh() = AppSettings(regions = Regions.all.map { it.code }.toSet())
+        /**
+         * A new install. Traffic is paused while no server works (SECURITY.md S20: nothing leaves around the tunnel
+         * unless the user chooses so; installs from before keep their setting, whose default stays DIRECT).
+         */
+        fun fresh() = AppSettings(
+            regions = Regions.builtIn.map { it.code }.toSet(), notifyMode = NotifyMode.UNCLEAR, noServerAction = NoServerAction.PAUSE,
+        )
 
     }
+
+    /** The notification mode in effect: the chosen one, else what 1.0.0's switch meant. */
+    val notify: NotifyMode get() = notifyMode ?: if (statusIcon) NotifyMode.ALWAYS else NotifyMode.OFF
 
     val effectiveConcurrency: Int
         get() = if (probeConcurrency > 0) probeConcurrency
         else (Runtime.getRuntime().availableProcessors() * 1.5).toInt().coerceIn(4, 12)
 }
+
+/** Orders of the list of countries: by name both ways, by how often each was chosen, by how reliably its servers answer. */
+@Serializable
+enum class CountrySort { NAME, NAME_DESC, USED, STABLE }

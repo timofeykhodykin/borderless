@@ -23,7 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material3.AlertDialog
+import app.borderless.ui.AppAlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
@@ -63,8 +63,17 @@ fun ShareSheet(title: String, bundle: ShareFormat.Bundle, allowKeep: Boolean, on
     var keep by remember { mutableStateOf(false) }
     var qr by remember { mutableStateOf(false) }
     val text = remember(bundle, keep) { if (keep) ShareFormat.encode(bundle) else ShareFormat.plain(bundle) }
+    // The screen lock first, if the user wants it (SECURITY.md S13); nothing is shown until then.
+    var unlocked by remember { mutableStateOf(false) }
+    val unlock = app.borderless.ui.rememberUnlock()
+    androidx.compose.runtime.LaunchedEffect(Unit) { unlock({ unlocked = true }, onDismiss) }
+    if (!unlocked) return
 
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Palette.background) {
+    // Links and the QR code carry the servers' keys: kept out of screenshots, recordings and the recents preview.
+    ModalBottomSheet(
+        onDismissRequest = onDismiss, containerColor = Palette.background,
+        properties = androidx.compose.material3.ModalBottomSheetProperties(securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn),
+    ) {
         Column(Modifier.padding(horizontal = 20.dp).navigationBarsPadding()) {
             Text(stringResource(R.string.share), fontSize = 21.sp, fontWeight = FontWeight.Bold, fontFamily = Display, color = Palette.text)
             Text(title, fontSize = 14.sp, color = Palette.textSecondary)
@@ -102,7 +111,7 @@ fun ShareSheet(title: String, bundle: ShareFormat.Bundle, allowKeep: Boolean, on
                 Text(stringResource(R.string.share_empty), fontSize = 14.sp, color = Palette.danger, modifier = Modifier.padding(vertical = 12.dp))
             } else {
                 Action(Icons.Rounded.ContentCopy, stringResource(R.string.share_copy)) {
-                    context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Border(less)", text))
+                    app.borderless.ui.copySensitive(context, "Border(less)", text)
                     Toast.makeText(context, context.getString(R.string.copied), Toast.LENGTH_SHORT).show()
                     onDismiss()
                 }
@@ -118,7 +127,7 @@ fun ShareSheet(title: String, bundle: ShareFormat.Bundle, allowKeep: Boolean, on
 
     if (qr) {
         val bitmap = remember(text) { Qr.encode(text) }
-        AlertDialog(
+        AppAlertDialog(
             onDismissRequest = { qr = false },
             containerColor = Palette.background,
             title = { Text(title) },

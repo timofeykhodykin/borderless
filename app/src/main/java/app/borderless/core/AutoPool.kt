@@ -10,21 +10,19 @@ import app.borderless.data.AutoState
 import app.borderless.data.Countries
 import app.borderless.data.LText
 import app.borderless.data.Repo
-import app.borderless.data.Regions
 import app.borderless.data.Server
 import app.borderless.data.StatsDb
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
-import java.net.HttpURLConnection
-import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.min
 
 /**
@@ -36,15 +34,22 @@ import kotlin.math.min
  * - The expected number of working servers adapts: few answers in a scan → more, almost all → fewer.
  * - Each scan also probes a few hidden servers ([explore]) so recovered ones get noticed.
  * - If nothing in the pool answers, [rescue] first checks that the internet works directly; only then
- *   hidden servers are probed in batches and the ones that answer join. Offline → nothing changes.
+ *   all hidden servers are probed in one scan and every one that answers joins at once. Offline → nothing changes.
  */
 object AutoPool {
     private const val TAG = "AutoPool"
     private const val SHORT_MS = 86_400_000L
     private const val LONG_MS = 7 * 86_400_000L
     private const val EXPLORE = 3
-    private const val RESCUE_BACKOFF_MS = 60_000L
-    private const val RESCUE_BACKOFF_MAX_MS = 15 * 60_000L
+    /** A rescue that found nothing waits 30 s, 1, 2, 4, then 5 minutes ([resetBackoff] when the network changes). */
+    private const val RESCUE_BACKOFF_MS = 30_000L
+    private const val RESCUE_BACKOFF_MAX_MS = 5 * 60_000L
+
+    /** How old a direct internet check may be to decide whether a rescue makes sense. */
+    private const val REACH_FRESH_MS = 30_000L
+
+    /** After the first hidden server answers, faster ones get this long before the choice is made. */
+    private const val GRACE_MS = 1_200L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + Errors.handler)
     private val mutex = Mutex()
@@ -56,7 +61,17 @@ object AutoPool {
     private var rescueFails = 0
     private var rescueAfter = 0L
 
-    val enabled: Boolean get() = Repo.settings.value.autoActive
+    /** "Offline, keeping the list" was said; not again until the internet answered once. */
+    private var offlineSaid = false
+
+    /** The network got better (changed, back, reaches further): the next rescue may run at once. */
+    fun resetBackoff() {
+        rescueFails = 0
+        rescueAfter = 0L
+    }
+
+    /** Off while countries are chosen: then their servers take part as the user shows them (see [Repo.isActive]). */
+    val enabled: Boolean get() = Repo.settings.value.let { it.autoActive && it.countries.isEmpty() }
 
     /** Recomputes the pool now (e.g. when the mode is switched on). */
     fun refresh() {
@@ -114,6 +129,8 @@ object AutoPool {
     fun explore(): List<Server> {
         // Optional work: not on battery saver or with the screen off (unless charging).
         if (!enabled || !Power.spareBattery || Eco.on) return emptyList()
+        // Careful checks: hidden servers are not shown to the network without need (SECURITY.md S9).
+        if (Repo.settings.value.carefulScans) return emptyList()
         val pool = Repo.auto.value.pool
         val hidden = Repo.servers.value.filter { it.id !in pool }
         if (hidden.isEmpty()) return emptyList()
@@ -125,68 +142,68 @@ object AutoPool {
     }
 
     /**
-     * Nothing in the pool answered. If the internet works directly, probe hidden servers (most
-     * promising first) in batches until some answer; those join the pool and the fastest is returned.
-     * If it does not, the phone is offline: leave the pool alone. Repeated misses back off.
+     * Nothing in the pool answered. If the internet works directly, probe every hidden server in one scan (most
+     * promising first, the scan's own parallelism and timeouts): each one that answers joins the pool at once (the
+     * map shows it), and the fastest that answered within [GRACE_MS] of the first is returned while the scan goes on
+     * (stopped there in the battery saving mode). Offline: leave the pool alone. A rescue that found nothing backs off.
      */
-    suspend fun rescue(avoid: String?): Server? {
-        if (!enabled) return null
+    suspend fun rescue(avoid: String?): Server? = coroutineScope {
+        if (!enabled) return@coroutineScope null
         val now = System.currentTimeMillis()
-        if (now < rescueAfter) return null
-        if (!directInternet()) {
-            AppLog.event(LText.of(R.string.ev_auto_offline), AppLog.Kind.WARN)
-            rescueAfter = now + RESCUE_BACKOFF_MS
-            return null
+        if (now < rescueAfter) return@coroutineScope null
+        if (NetCheck.reach(REACH_FRESH_MS) == NetCheck.Reach.NONE) {
+            if (!offlineSaid) AppLog.event(LText.of(R.string.ev_auto_offline), AppLog.Kind.WARN)
+            offlineSaid = true
+            return@coroutineScope null
         }
+        offlineSaid = false
         val pool = Repo.auto.value.pool
         val order = ranked.withIndex().associate { (i, id) -> id to i }
         val hidden = Repo.servers.value.filter { it.id !in pool && it.id != avoid }.sortedBy { order[it.id] ?: Int.MAX_VALUE }
-        if (hidden.isEmpty()) return null
+        if (hidden.isEmpty()) return@coroutineScope null
         AppLog.event(LText.of(R.string.ev_auto_rescue, hidden.size), AppLog.Kind.WARN)
-        for (batch in hidden.chunked(Repo.settings.value.effectiveConcurrency)) {
-            Activity.count(Activity.Kind.PROBE_RESCUE, batch.size)
-            val results = Energy.track(Activity.Kind.PROBE_RESCUE, exchanges = batch.size) {
-                coroutineScope { batch.map { s -> async { s to Scanner.probeOne(s) } }.awaitAll() }
+        val ids = hidden.map { it.id }.toSet()
+        val found = ConcurrentHashMap<String, Int>()
+        val decided = CompletableDeferred<Unit>()
+        // Lives as long as the scan, not this call: servers answering after the choice still join.
+        val collector = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            Scanner.results.collect { (id, ms) ->
+                if (ms == null || id !in ids) return@collect
+                if (found.putIfAbsent(id, ms) != null) return@collect
+                join(id, raise = found.size == 1)
+                if (found.size == 1) launch { delay(GRACE_MS); decided.complete(Unit) }
             }
-            val found = results.filter { it.second != null }
-            if (found.isEmpty()) continue
-            rescueFails = 0
-            mutex.withLock {
-                val before = Repo.auto.value
-                val grown = before.copy(target = min(before.target + 1, AutoPoolMath.MAX_TARGET))
-                Repo.updateAuto { grown }
-                apply(grown, grown.pool + found.map { it.first.id }, System.currentTimeMillis(), LText.of(R.string.ev_auto_rescued, found.size))
-            }
-            return found.minBy { it.second!! }.first
         }
-        rescueFails++
-        rescueAfter = now + min(RESCUE_BACKOFF_MAX_MS, RESCUE_BACKOFF_MS shl min(rescueFails, 4))
-        AppLog.event(LText.of(R.string.ev_auto_rescue_none), AppLog.Kind.ERROR)
-        return null
+        // Joins a running scan's queue if there is one.
+        val scan = Scanner.start(reason = Activity.Kind.PROBE_RESCUE, only = hidden)
+        scope.launch {
+            scan.join()
+            decided.complete(Unit)
+            collector.cancel()
+            if (found.isEmpty()) {
+                rescueFails++
+                rescueAfter = System.currentTimeMillis() + min(RESCUE_BACKOFF_MAX_MS, RESCUE_BACKOFF_MS shl min(rescueFails - 1, 4))
+                AppLog.event(LText.of(R.string.ev_auto_rescue_none), AppLog.Kind.ERROR)
+            } else {
+                AppLog.event(LText.of(R.string.ev_auto_rescued, found.size))
+            }
+        }
+        decided.await()
+        if (found.isEmpty()) return@coroutineScope null
+        rescueFails = 0
+        if (Eco.on) Scanner.finishEarly(Activity.Kind.PROBE_RESCUE)
+        Repo.server(found.minBy { it.value }.key)
     }
 
-    /**
-     * Does the internet work outside the proxy? The chosen zones' own sites first (they are the most likely to
-     * answer locally), then common ones.
-     */
-    private suspend fun directInternet(): Boolean = withContext(Dispatchers.IO) {
-        Activity.count(Activity.Kind.NET_CHECK)
-        Energy.track(Activity.Kind.NET_CHECK) { directInternetNow() }
-    }
-
-    private fun directInternetNow(): Boolean =
-        (Regions.of(Repo.settings.value.regions).flatMap { it.checkUrls } + COMMON_CHECK_URLS).distinct().any { url ->
-            runCatching {
-                val c = URL(url).openConnection() as HttpURLConnection
-                c.connectTimeout = 3000
-                c.readTimeout = 3000
-                c.instanceFollowRedirects = false
-                c.requestMethod = "HEAD"
-                val code = c.responseCode
-                c.disconnect()
-                code in 100..599
-            }.getOrDefault(false)
+    /** A hidden server answered during a rescue: it joins the pool now ([raise]: the first one also raises the target). */
+    private suspend fun join(id: String, raise: Boolean) = mutex.withLock {
+        val now = System.currentTimeMillis()
+        Repo.updateAuto { a ->
+            if (id in a.pool) a
+            else (a.pool + id).let { pool ->
+                a.copy(target = if (raise) min(a.target + 1, AutoPoolMath.MAX_TARGET) else a.target, pool = pool, joined = AutoPoolMath.joined(a, pool, now))
+            }
         }
-
-    private val COMMON_CHECK_URLS = listOf("https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204")
+        AppLog.debug(TAG, "rescue: ${Repo.server(id)?.let(Repo::realName) ?: id} answered, added (pool ${Repo.auto.value.pool.size})")
+    }
 }

@@ -28,6 +28,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.borderless.ui.theme.Palette
 
+/** Material's DropdownMenu pads its content by this much vertically (not configurable). */
+private val MENU_PAD = 8.dp
+
 /**
  * The app's own popup menu (instead of the plain Material look): rounded card on the background colour
  * with a hairline border and a soft shadow; items via [AppMenuItem].
@@ -42,10 +45,11 @@ fun AppMenu(expanded: Boolean, onDismiss: () -> Unit, content: @Composable Colum
         shadowElevation = 6.dp,
         tonalElevation = 0.dp,
         border = BorderStroke(1.dp, Palette.outline),
-        modifier = Modifier.widthIn(min = 210.dp).padding(vertical = 2.dp),
+        modifier = Modifier.widthIn(min = 210.dp),
     ) {
         // Every item as wide as the widest one: the selection fills the row, trailing marks line up on the right.
-        Column(Modifier.width(IntrinsicSize.Max).padding(horizontal = 6.dp), content = content)
+        // The menu itself pads its content by 8 dp at the top and bottom; the same at the sides keeps the gap even.
+        Column(Modifier.width(IntrinsicSize.Max).padding(horizontal = MENU_PAD), content = content)
     }
 }
 

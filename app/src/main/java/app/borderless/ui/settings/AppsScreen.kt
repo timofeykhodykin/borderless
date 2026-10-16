@@ -182,7 +182,7 @@ private fun AppsList(
                         // Why it can't be ticked here, or that its zone already takes it out of the tunnel.
                         val note = when {
                             inOther -> stringResource(if (direct) R.string.apps_in_through else R.string.apps_in_without)
-                            zone != null -> stringResource(R.string.apps_zone, zone.code)
+                            zone != null -> stringResource(R.string.apps_zone, zone.title)
                             else -> null
                         }
                         note?.let { Text(it, fontSize = 11.5.sp, color = Palette.accentStrong, maxLines = 1, overflow = TextOverflow.Ellipsis) }

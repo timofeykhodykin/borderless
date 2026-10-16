@@ -26,7 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material3.AlertDialog
+import app.borderless.ui.AppAlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -68,17 +68,30 @@ fun LogScreen(onBack: () -> Unit) {
     // Events / detailed: tap a tab or swipe sideways (as on the statistics screen).
     val tabs = rememberTabs(2)
     var confirmClear by remember { mutableStateOf(false) }
+    // Sharing: with or without the servers' addresses (SECURITY.md S12)? Null: not asked.
+    var shareDetailed by remember { mutableStateOf<Boolean?>(null) }
 
     ScreenScaffold(stringResource(R.string.log_title), onBack, actions = {
-        IconButton({ share(context, detailed = tabs.currentPage == 1) }) { Icon(Icons.Rounded.Share, stringResource(R.string.share), tint = Palette.textSecondary) }
+        IconButton({ shareDetailed = tabs.currentPage == 1 }) { Icon(Icons.Rounded.Share, stringResource(R.string.share), tint = Palette.textSecondary) }
         IconButton({ confirmClear = true }) { Icon(Icons.Rounded.DeleteOutline, stringResource(R.string.clear), tint = Palette.textSecondary) }
     }) {
         TabStrip(listOf(stringResource(R.string.tab_events), stringResource(R.string.tab_detailed)), tabs)
         TabPages(tabs) { page -> if (page == 0) EventsList() else DebugList() }
     }
 
+    shareDetailed?.let { detailed ->
+        AppAlertDialog(
+            onDismissRequest = { shareDetailed = null },
+            title = { Text(stringResource(R.string.log_share_title)) },
+            text = { Text(stringResource(R.string.log_share_addresses)) },
+            confirmButton = { TextButton({ shareDetailed = null; share(context, detailed, hideAddresses = true) }) { Text(stringResource(R.string.log_share_hide)) } },
+            dismissButton = { TextButton({ shareDetailed = null; share(context, detailed, hideAddresses = false) }) { Text(stringResource(R.string.log_share_keep)) } },
+        )
+    }
+
     if (confirmClear) {
-        AlertDialog(
+        AppAlertDialog(
+            irreversible = true,
             onDismissRequest = { confirmClear = false },
             containerColor = Palette.background,
             title = { Text(stringResource(R.string.clear_log_q)) },
@@ -202,15 +215,17 @@ private fun formatTime(t: Long): String {
     return SimpleDateFormat(pattern, Locale.getDefault()).format(Date(t))
 }
 
-private fun share(context: Context, detailed: Boolean) {
+/** [hideAddresses]: the servers' host names and public IP addresses become "server-N" / "ip-N" (stable in one export). */
+private fun share(context: Context, detailed: Boolean, hideAddresses: Boolean) {
     val intent = Intent(Intent.ACTION_SEND).setType("text/plain")
+    fun clean(text: String) = if (!hideAddresses) text else app.borderless.data.Scrub.addresses(text, app.borderless.data.Repo.servers.value.map { it.host })
     if (detailed) {
         val header = "Border(less) ${BuildConfig.VERSION_NAME}, ${CoreEnv.version().substringBefore(" (")}, Android ${Build.VERSION.RELEASE} (${Build.MANUFACTURER} ${Build.MODEL})"
-        val file = File(context.cacheDir, "share/borderless-log.txt").apply { parentFile?.mkdirs(); writeText(AppLog.exportDebug(header)) }
+        val file = File(context.cacheDir, "share/borderless-log.txt").apply { parentFile?.mkdirs(); writeText(clean(AppLog.exportDebug(header))) }
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         intent.putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     } else {
-        intent.putExtra(Intent.EXTRA_TEXT, AppLog.exportEvents())
+        intent.putExtra(Intent.EXTRA_TEXT, clean(AppLog.exportEvents()))
     }
     Errors.guard("sharing the log", Unit) { context.startActivity(Intent.createChooser(intent, context.getString(R.string.log_share_title))) }
 }

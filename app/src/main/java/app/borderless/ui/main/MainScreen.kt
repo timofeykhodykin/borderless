@@ -49,6 +49,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.ui.draw.shadow
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -59,6 +60,7 @@ import androidx.compose.material.icons.automirrored.rounded.AltRoute
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.BatterySaver
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Insights
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
@@ -100,7 +102,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.em
 import app.borderless.R
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import app.borderless.core.Phase
 import app.borderless.core.Scanner
 import app.borderless.core.TunnelStatus
@@ -137,6 +143,8 @@ data class MainState(
     val eco: Boolean = false,
     /** Its expected saving in percent, if known. */
     val ecoSaving: Int? = null,
+    /** Servers of these countries only ([app.borderless.data.AppSettings.countries]); empty = any. */
+    val countries: Set<String> = emptySet(),
 )
 
 class MainActions(
@@ -152,6 +160,9 @@ class MainActions(
     val onAdd: () -> Unit,
     val onEco: () -> Unit = {},
     val onEcoSettings: () -> Unit = {},
+    val onRoutingSettings: () -> Unit = {},
+    val onServerSettings: () -> Unit = {},
+    val onCountries: () -> Unit = {},
 )
 
 @Composable
@@ -170,11 +181,13 @@ fun MainScreen(state: MainState, actions: MainActions) {
             TopBar(actions)
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                // Room at the bottom for the battery saving button.
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 96.dp),
+                // Room at the bottom for the country and battery saving buttons.
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 164.dp),
             ) {
                 item { Stats(state) }
                 item { ConnectBlock(state, actions) }
+                if (state.status.phase == Phase.CONNECTED) item { AlwaysOnCard() }
+                if (state.status.phase == Phase.PAUSED || state.status.paused) item { PauseCard(actions.onServerSettings) }
                 if (state.servers.isNotEmpty()) {
                     item {
                         Heatmap(
@@ -222,15 +235,148 @@ fun MainScreen(state: MainState, actions: MainActions) {
                             modifier = Modifier.animateItem(),
                         )
                     }
+                } else if (state.countries.isNotEmpty() && Repo.servers.value.isNotEmpty()) {
+                    item { CountryEmptyHint(state.countries, actions.onCountries) }
                 } else {
                     item { EmptyHint(actions.onAdd) }
                 }
             }
         }
-        EcoButton(
-            state.eco, state.ecoSaving, actions.onEco, actions.onEcoSettings,
+        Column(
             Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 18.dp, bottom = 18.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            CountryButton(state.countries, actions.onCountries)
+            EcoButton(state.eco, state.ecoSaving, actions.onEco, actions.onEcoSettings, Modifier)
+        }
+    }
+}
+
+/**
+ * Servers of chosen countries only: like the battery saving button, a round button with a world map while any
+ * country will do; with countries chosen it is filled with the accent and shows, after the map, the one country's
+ * flag or how many there are. Tap opens the list of countries.
+ */
+@Composable
+private fun CountryButton(countries: Set<String>, onClick: () -> Unit) {
+    val on = countries.isNotEmpty()
+    val bg by animateColorAsState(if (on) Palette.accent else Palette.card, label = "country")
+    val fg by animateColorAsState(if (on) Color.White else Palette.textSecondary, label = "countryFg")
+    Row(
+        Modifier
+            .height(56.dp)
+            .widthIn(min = 56.dp)
+            .shadow(if (on) 6.dp else 3.dp, CircleShape)
+            .clip(CircleShape)
+            .background(bg)
+            .clickable(onClick = onClick)
+            .animateContentSize()
+            .padding(horizontal = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Rounded.Public,
+            contentDescription = if (on) stringResource(R.string.country_btn_on_cd, Countries.labels(countries)) else stringResource(R.string.country_btn_off_cd),
+            tint = fg, modifier = Modifier.size(24.dp),
         )
+        if (on) {
+            Spacer(Modifier.width(8.dp))
+            val one = countries.singleOrNull()
+            if (one != null && one != Countries.UNKNOWN) FlagIcon(one, 15.dp)
+            else Text(if (one != null) "?" else countries.size.toString(), fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = Body, color = fg)
+        }
+    }
+}
+
+/**
+ * Once, after a connection works: Android can keep it on all the time (start it with the phone, restart it) — the way
+ * not to have to think about it. Shown only while that is off; "Set up" opens the system settings.
+ */
+@Composable
+private fun AlwaysOnCard() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val prefs = remember { context.getSharedPreferences("tunnel", android.content.Context.MODE_PRIVATE) }
+    var asked by remember { mutableStateOf(prefs.getBoolean("always_on_asked", false)) }
+    // Known to be off (Android 10+ reports it), and the phone has the system page to turn it on.
+    val hasSettings = remember {
+        android.content.Intent(android.provider.Settings.ACTION_VPN_SETTINGS).resolveActivity(context.packageManager) != null
+    }
+    if (asked || !hasSettings || app.borderless.service.TunnelService.alwaysOn != false) return
+    fun done() {
+        asked = true
+        prefs.edit().putBoolean("always_on_asked", true).apply()
+    }
+    HintCard(
+        stringResource(R.string.always_on_card_title), stringResource(R.string.always_on_card_text),
+        stringResource(R.string.always_on_card_later), stringResource(R.string.always_on_card_set),
+        onLater = ::done, onAction = { done(); app.borderless.ui.settings.openAlwaysOnSettings(context) },
+    )
+}
+
+/**
+ * Once, the first time traffic is paused because no server works (the default since 1.1, SECURITY.md S20): why, and
+ * that it can go direct instead — "Change" opens Settings → Server selection.
+ */
+@Composable
+private fun PauseCard(onSettings: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val prefs = remember { context.getSharedPreferences("tunnel", android.content.Context.MODE_PRIVATE) }
+    var seen by remember { mutableStateOf(prefs.getBoolean("pause_card_seen", false)) }
+    if (seen) return
+    fun done() {
+        seen = true
+        prefs.edit().putBoolean("pause_card_seen", true).apply()
+    }
+    HintCard(
+        stringResource(R.string.pause_card_title), stringResource(R.string.pause_card_text),
+        stringResource(R.string.pause_card_ok), stringResource(R.string.pause_card_change),
+        onLater = ::done, onAction = { done(); onSettings() },
+    )
+}
+
+/** A card under the connect button with a title, a grey explanation and two text buttons. */
+@Composable
+private fun HintCard(title: String, text: String, later: String, action: String, onLater: () -> Unit, onAction: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .background(Palette.card)
+            .padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 6.dp),
+    ) {
+        Text(title, fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = Display, color = Palette.text)
+        Spacer(Modifier.height(4.dp))
+        Text(text, fontSize = 13.sp, color = Palette.textSecondary, fontFamily = Body)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            androidx.compose.material3.TextButton(onLater) {
+                Text(later, color = Palette.textSecondary, fontFamily = Body)
+            }
+            androidx.compose.material3.TextButton(onAction) {
+                Text(action, color = Palette.accentStrong, fontFamily = Body, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+/** Countries are chosen but none of the servers is from there: traffic goes direct; tap to choose others. */
+@Composable
+private fun CountryEmptyHint(countries: Set<String>, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 28.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .background(Palette.card)
+            .clickable(onClick = onClick)
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(stringResource(R.string.empty_country_title, Countries.labels(countries)), fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = Display, color = Palette.text, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(6.dp))
+        Text(stringResource(R.string.empty_country_text), fontSize = 13.sp, color = Palette.textSecondary, textAlign = TextAlign.Center)
     }
 }
 
@@ -395,6 +541,16 @@ private fun rememberAgo(time: Long?): String? {
     }
 }
 
+/** "128 ms" with the unit (whatever follows the last digit) at 70 % of the number's size. */
+private fun withSmallUnit(value: String): androidx.compose.ui.text.AnnotatedString {
+    val end = value.indexOfLast(Char::isDigit) + 1
+    if (end <= 0 || end >= value.length) return androidx.compose.ui.text.AnnotatedString(value)
+    return androidx.compose.ui.text.buildAnnotatedString {
+        append(value.substring(0, end))
+        withStyle(androidx.compose.ui.text.SpanStyle(fontSize = 0.7.em)) { append(value.substring(end)) }
+    }
+}
+
 @Composable
 private fun StatCard(label: String, value: String, ms: Int?, sub: String?, modifier: Modifier) {
     Column(
@@ -410,7 +566,15 @@ private fun StatCard(label: String, value: String, ms: Int?, sub: String?, modif
                 Box(Modifier.size(8.dp).clip(CircleShape).background(Palette.ping(ms)))
                 Spacer(Modifier.width(6.dp))
             }
-            Text(value, fontSize = 19.sp, fontWeight = FontWeight.Bold, fontFamily = Display, color = Palette.text, maxLines = 1)
+            // "128 ms" must fit a third of a narrow screen: the unit is set smaller, and the whole value
+            // shrinks a little if it still doesn't fit.
+            androidx.compose.foundation.text.BasicText(
+                withSmallUnit(value),
+                style = androidx.compose.ui.text.TextStyle(fontSize = 19.sp, fontWeight = FontWeight.Bold, fontFamily = Display, color = Palette.text),
+                maxLines = 1,
+                softWrap = false,
+                autoSize = androidx.compose.foundation.text.TextAutoSize.StepBased(minFontSize = 11.sp, maxFontSize = 19.sp, stepSize = 0.5.sp),
+            )
         }
         // Always a line, so the cards keep the same height.
         Text(sub.orEmpty(), fontSize = 11.5.sp, color = Palette.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -454,16 +618,52 @@ private fun ConnectBlock(state: MainState, actions: MainActions) {
             )
         }
         Spacer(Modifier.height(18.dp))
+        val lists = rememberZoneLists(state.routingEnabled)
         // Wraps to a second line on narrow screens.
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            RoutingChip(state.routingEnabled, actions.onRoutingToggle)
+            RoutingChip(state.routingEnabled, actions.onRoutingToggle, loading = lists?.busy == true)
             StrategyChip(state.strategy, actions.onStrategy)
             PingChip(state.scan, actions.onPingAll)
         }
+        lists?.let { ZoneListsNote(it, actions.onRoutingSettings) }
     }
+}
+
+/** The chosen zones' lists while some are still missing (the app ships none): what is happening with them. */
+private class ZoneLists(val busy: Boolean, val viaServer: Boolean, val failed: Boolean, val retryAt: Long)
+
+/** Null unless routing is on and a chosen zone can't take part yet because its lists aren't downloaded. */
+@Composable
+private fun rememberZoneLists(routing: Boolean): ZoneLists? {
+    val geo by app.borderless.core.GeoLists.state.collectAsStateWithLifecycle()
+    val busy by app.borderless.core.GeoLists.busy.collectAsStateWithLifecycle()
+    val work by app.borderless.core.GeoLists.work.collectAsStateWithLifecycle()
+    val zones by remember { Repo.settings.map { it.regions }.distinctUntilChanged() }.collectAsStateWithLifecycle(Repo.settings.value.regions)
+    // The installed categories change together with the state (written after each download).
+    val waiting = remember(geo, busy, zones) { app.borderless.data.Regions.of(zones).any { !app.borderless.data.Regions.ready(it) } }
+    if (!routing || !waiting) return null
+    return ZoneLists(busy, work == app.borderless.core.GeoLists.Work.VIA_SERVER, !busy && geo.lastError != null, geo.retryAt)
+}
+
+/** One quiet line under the chips; tap: the routing settings, where each zone says the same in detail. */
+@Composable
+private fun ZoneListsNote(lists: ZoneLists, onOpen: () -> Unit) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(lists.failed) { while (lists.failed) { now = System.currentTimeMillis(); delay(1_000) } }
+    val text = when {
+        lists.viaServer -> stringResource(R.string.routing_lists_via_server)
+        lists.busy -> stringResource(R.string.routing_lists_downloading)
+        lists.failed -> stringResource(R.string.routing_lists_failed, app.borderless.data.Units.durationText(((lists.retryAt - now) / 1000).coerceAtLeast(0)))
+        else -> stringResource(R.string.routing_lists_pending)
+    }
+    Text(
+        text, fontSize = 12.sp, color = if (lists.failed) Palette.textSecondary else Palette.textMuted, textAlign = TextAlign.Center,
+        modifier = Modifier.padding(top = 10.dp).padding(horizontal = 28.dp).clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onOpen).padding(horizontal = 8.dp, vertical = 4.dp),
+    )
 }
 
 @Composable
@@ -473,7 +673,7 @@ private fun statusText(state: MainState): Pair<String, String> {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(status.phase) {
         // Retry countdown every second; "last connected …" every half minute.
-        while (status.phase == Phase.DIRECT || status.phase == Phase.PAUSED || status.phase == Phase.OFF) {
+        while (status.phase == Phase.DIRECT || status.phase == Phase.PAUSED || status.phase == Phase.LIMITED || status.phase == Phase.OFF) {
             now = System.currentTimeMillis()
             delay(if (status.phase == Phase.OFF) 30_000 else 1000)
         }
@@ -489,16 +689,22 @@ private fun statusText(state: MainState): Pair<String, String> {
             0L -> stringResource(R.string.status_never_connected)
             else -> stringResource(R.string.status_last_connected, agoText(t, now))
         }
+        Phase.CONNECTED if status.unanswered -> stringResource(R.string.status_unanswered) to stringResource(R.string.status_unanswered_sub, server?.let(Repo::displayName).orEmpty())
         Phase.CONNECTED -> buildString {
             append(Countries.name(server?.country))
             status.ping?.let { append(" · ").append(stringResource(R.string.ms, it)) }
         } to server?.let(Repo::displayName).orEmpty()
         Phase.SEARCHING -> stringResource(R.string.status_searching) to
             (state.scan?.let { stringResource(R.string.status_checked, it.done, it.total) } ?: server?.let(Repo::displayName) ?: "")
-        Phase.DIRECT -> if (status.noServers) stringResource(R.string.status_no_servers) to stringResource(R.string.status_no_servers_sub)
+        Phase.DIRECT -> if (status.noServers) stringResource(R.string.status_no_servers) to
+            stringResource(if (state.countries.isNotEmpty()) R.string.status_no_servers_country_sub else R.string.status_no_servers_sub)
         else stringResource(R.string.status_unavailable) to stringResource(R.string.status_direct_sub, app.borderless.data.Units.durationText(retryIn))
-        Phase.PAUSED -> stringResource(R.string.status_unavailable) to stringResource(R.string.status_paused_sub, app.borderless.data.Units.durationText(retryIn))
+        Phase.PAUSED -> if (status.noServers) stringResource(R.string.status_no_servers) to
+            stringResource(if (state.countries.isNotEmpty()) R.string.status_no_servers_country_paused_sub else R.string.status_no_servers_paused_sub)
+        else stringResource(R.string.status_unavailable) to stringResource(R.string.status_paused_sub, app.borderless.data.Units.durationText(retryIn))
         Phase.NO_NETWORK -> stringResource(R.string.status_no_network) to stringResource(R.string.status_no_network_sub)
+        Phase.LIMITED -> stringResource(R.string.status_limited) to
+            stringResource(if (status.paused) R.string.status_limited_paused_sub else R.string.status_limited_sub, app.borderless.data.Units.durationText(retryIn))
     }
 }
 
@@ -533,7 +739,7 @@ private fun ConnectButton(phase: Phase, searching: Boolean, sats: List<Satellite
     val fill by animateColorAsState(
         when (phase) {
             Phase.CONNECTED -> Palette.accent
-            Phase.DIRECT, Phase.NO_NETWORK -> Palette.warning
+            Phase.DIRECT, Phase.NO_NETWORK, Phase.LIMITED -> Palette.warning
             Phase.PAUSED -> Palette.rose
             Phase.SEARCHING -> Palette.accentSoft
             Phase.OFF -> Palette.background
@@ -543,7 +749,7 @@ private fun ConnectButton(phase: Phase, searching: Boolean, sats: List<Satellite
     val ring by animateColorAsState(
         when (phase) {
             Phase.CONNECTED -> Palette.accentStrong
-            Phase.DIRECT, Phase.NO_NETWORK -> Palette.warningStrong
+            Phase.DIRECT, Phase.NO_NETWORK, Phase.LIMITED -> Palette.warningStrong
             Phase.PAUSED -> Palette.danger
             Phase.SEARCHING -> Palette.accentContainer
             Phase.OFF -> Color.Transparent
@@ -848,7 +1054,7 @@ fun Modifier.pendingSpinner(active: Boolean, spin: () -> Float, color: Color = P
 
 /** Toggle chip: filled coral when routing is on. */
 @Composable
-private fun RoutingChip(enabled: Boolean, onToggle: (Boolean) -> Unit) {
+private fun RoutingChip(enabled: Boolean, onToggle: (Boolean) -> Unit, loading: Boolean = false) {
     val bg by animateColorAsState(if (enabled) Palette.accent else Palette.card, label = "routing")
     val fg = if (enabled) Color.White else Palette.textSecondary
     Row(
@@ -860,7 +1066,10 @@ private fun RoutingChip(enabled: Boolean, onToggle: (Boolean) -> Unit) {
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Icons.AutoMirrored.Rounded.AltRoute, contentDescription = null, tint = fg, modifier = Modifier.size(18.dp))
+        // The zones' lists are being downloaded: a small spinner in place of the icon.
+        if (loading) Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) {
+            androidx.compose.material3.CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = fg)
+        } else Icon(Icons.AutoMirrored.Rounded.AltRoute, contentDescription = null, tint = fg, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(6.dp))
         Text(stringResource(R.string.routing), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (enabled) Color.White else Palette.text)
     }
@@ -985,8 +1194,16 @@ internal fun ServerRow(
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(3.dp))
+            val issues = remember(server.id, server.link) { app.borderless.data.Insecurity.of(server) }
             Text(
-                listOfNotNull(Countries.name(server.country), group, server.protocol).joinToString(" · "),
+                buildAnnotatedString {
+                    append(listOfNotNull(Countries.name(server.country), group, server.protocol).joinToString(" · "))
+                    // Unprotected on the way to the server: said on the server itself (SECURITY.md S7).
+                    if (issues.isNotEmpty()) withStyle(SpanStyle(color = Palette.danger)) {
+                        append(" · ")
+                        append(stringResource(if (app.borderless.data.Insecurity.Issue.NO_ENCRYPTION in issues) R.string.ins_no_encryption else R.string.ins_no_cert_check))
+                    }
+                },
                 fontSize = 12.5.sp, color = Palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
         }

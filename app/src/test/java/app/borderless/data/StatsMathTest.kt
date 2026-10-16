@@ -37,6 +37,28 @@ class StatsMathTest {
     }
 
     @Test
+    fun deepSleepWithinOneProcessCountsInFull() {
+        // Heartbeats 20 minutes apart (phone asleep), same process; then the process dies after the last one.
+        val rows = listOf(
+            StatsDb.PhaseRow(0, Phase.CONNECTED, "a", run = 1),
+            StatsDb.PhaseRow(20 * min, Phase.CONNECTED, "a", run = 1),
+            StatsDb.PhaseRow(45 * min, Phase.DIRECT, null, run = 1),
+            StatsDb.PhaseRow(120 * min, Phase.SEARCHING, null, run = 2),
+        )
+        val d = StatsMath.durations(StatsMath.segments(rows, 0, 121 * min, 121 * min))
+        assertEquals(45 * min, d[Phase.CONNECTED])
+        assertEquals(StatsDb.HEARTBEAT_MS * 3 / 2, d[Phase.DIRECT])
+    }
+
+    @Test
+    fun rowsWithoutProcessTreatRepeatsAsTheSameProcess() {
+        // Written before v3: a repeat of the same state is a late heartbeat, a change after a silence is not.
+        val rows = listOf(row(0, Phase.CONNECTED, "a"), row(14, Phase.CONNECTED, "a"), row(40, Phase.SEARCHING), row(41, Phase.CONNECTED, "a"))
+        val d = StatsMath.durations(StatsMath.segments(rows, 0, 42 * min, 42 * min))
+        assertEquals(14 * min + StatsDb.HEARTBEAT_MS * 3 / 2 + 1 * min, d[Phase.CONNECTED])
+    }
+
+    @Test
     fun segmentsAreClippedToThePeriod() {
         val rows = listOf(row(0, Phase.CONNECTED, "a"), row(4, Phase.CONNECTED, "a"))
         val seg = StatsMath.segments(rows, 2 * min, 6 * min, 6 * min)

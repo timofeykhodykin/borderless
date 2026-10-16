@@ -19,8 +19,23 @@ object Countries {
 
     private val table: Table by lazy {
         val text = app.borderless.Res.asset("countries.json") ?: java.io.File("src/main/assets/countries.json").takeIf { it.exists() }?.readText()
-        text?.let { runCatching { StoreJson.decodeFromString(Table.serializer(), it) }.getOrNull() } ?: Table()
+        text?.let {
+            runCatching { StoreJson.decodeFromString(Table.serializer(), it) }.onFailure { e -> Errors.report(e, "reading countries.json", show = false) }.getOrNull()
+        } ?: Table()
     }
+
+    /** In [AppSettings.countries]: the servers whose country isn't known. */
+    const val UNKNOWN = "-"
+
+    /** A server's country as [AppSettings.countries] names it: its code, or [UNKNOWN]. */
+    fun of(s: Server): String = s.country?.takeIf { it.length == 2 }?.uppercase() ?: UNKNOWN
+
+    /** A code of [AppSettings.countries] by name ("Unknown country" for [UNKNOWN]). */
+    fun label(code: String): String = if (code == UNKNOWN) name(null) else name(code)
+
+    /** Several of them as one line, alphabetically. */
+    fun labels(codes: Collection<String>): String =
+        codes.map(::label).sortedWith(java.text.Collator.getInstance(app.borderless.Res.locale)).joinToString(", ")
 
     /** Country name in the UI language; null/unknown codes give "Unknown country". */
     fun name(code: String?): String {

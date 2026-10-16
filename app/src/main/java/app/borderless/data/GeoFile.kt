@@ -40,7 +40,7 @@ object GeoFile {
             val head = src.read(pos, minOf(HEADER_BYTES.toLong(), size - pos).toInt())
             val h = header(head, pos, pos, size)
             val code = h.code.uppercase()
-            if (code in wanted && code !in out) out[code] = src.read(pos, h.total.toInt())
+            if (code in wanted && code !in out) out[code] = src.read(pos, bounded(h.total))
             pos += h.total
         }
         check(pos == size) { "entries end at $pos, file has $size bytes" }
@@ -66,10 +66,16 @@ object GeoFile {
     @Volatile
     var installed: Map<String, Set<String>>? = null
 
+    /** The folder the core reads lists from (also the zones' own `.dat` files); null in unit tests. */
+    @Volatile
+    var dir: java.io.File? = null
+
     /** Whether a routing rule can be used: a `geosite:` / `geoip:` category the files have, or any other rule. */
     fun usable(rule: String): Boolean {
         val have = installed ?: return true
         val kind = rule.substringBefore(':', "").lowercase()
+        // A zone's own list file: there as long as the zone is (see DatFile).
+        if (kind == "ext") return dir?.let { java.io.File(it, rule.removePrefix("ext:").substringBefore(':')).isFile } ?: true
         if (kind != "geosite" && kind != "geoip") return true
         // "geosite:category@attr" and "ext:" forms: the part before '@'.
         val code = rule.substringAfter(':').substringBefore('@').uppercase()
@@ -87,7 +93,7 @@ object GeoFile {
             val head = src.read(pos, minOf(HEADER_BYTES.toLong(), size - pos).toInt())
             val h = header(head, pos, pos, size)
             val local = wanted[Regions.hash(h.code.uppercase())]
-            if (local != null && local.uppercase() !in out) out[local.uppercase()] = rename(src.read(pos, h.total.toInt()), local.uppercase())
+            if (local != null && local.uppercase() !in out) out[local.uppercase()] = rename(src.read(pos, bounded(h.total)), local.uppercase())
             pos += h.total
         }
         check(pos == size) { "entries end at $pos, file has $size bytes" }
@@ -117,7 +123,7 @@ object GeoFile {
         return ByteArrayOutputStream().apply { write(0x0A); writeVarint(body.size.toLong()); write(body) }.toByteArray()
     }
 
-    private fun ByteArrayOutputStream.writeVarint(v: Long) {
+    internal fun ByteArrayOutputStream.writeVarint(v: Long) {
         var x = v
         while (x >= 0x80) { write(((x and 0x7F) or 0x80).toInt()); x = x ushr 7 }
         write(x.toInt())
@@ -158,6 +164,15 @@ object GeoFile {
         val code = String(buf, i, codeLen, Charsets.UTF_8)
         return Header(code, total)
     }
+
+    /** The length of an entry to be read into memory: at most [MAX_ENTRY] (a remote file says what it likes). */
+    private fun bounded(total: Long): Int {
+        check(total <= MAX_ENTRY) { "entry of $total bytes" }
+        return total.toInt()
+    }
+
+    /** The largest category the app reads (the largest it uses holds a few MB). */
+    private const val MAX_ENTRY = 64L shl 20
 
     /** Enough for an entry's length and code. */
     private const val HEADER_BYTES = 96

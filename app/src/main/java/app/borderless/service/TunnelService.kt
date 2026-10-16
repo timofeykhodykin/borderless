@@ -1,6 +1,8 @@
 package app.borderless.service
 
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.collectLatest
+import app.borderless.data.NotifyMode
 import kotlinx.coroutines.flow.combine
 import app.borderless.data.Activity
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -11,6 +13,7 @@ import app.borderless.R
 import android.content.Context
 import app.borderless.Res
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
@@ -47,6 +50,9 @@ class TunnelService : VpnService(), Engine.Host {
         const val ACTION_START = "app.borderless.START"
         const val ACTION_STOP = "app.borderless.STOP"
         const val ACTION_FIND_BEST = "app.borderless.FIND_BEST"
+        private const val ACTION_AUTO = "app.borderless.AUTO"
+        /** Leave Manual for the default automatic strategy (its server stopped answering): it finds the best one. */
+        const val ACTION_USE_BEST = "app.borderless.USE_BEST"
         const val EXTRA_SERVER = "server"
         private const val EXTRA_FOREGROUND = "foreground"
 
@@ -61,7 +67,7 @@ class TunnelService : VpnService(), Engine.Host {
             // Without the status icon there is no notification at all: a plain start is enough, the
             // system keeps an established tunnel alive by itself. If Android refuses (app in background),
             // fall back to a foreground start, which must show the notification for a moment.
-            if (Repo.settings.value.statusIcon) {
+            if (Repo.settings.value.notify == NotifyMode.ALWAYS) {
                 ContextCompat.startForegroundService(context, i.putExtra(EXTRA_FOREGROUND, true))
             } else try {
                 context.startService(i)
@@ -70,12 +76,27 @@ class TunnelService : VpnService(), Engine.Host {
             }
         }
 
+        /**
+         * Started by itself (phone restart, app update: see [AutoStart]): a foreground start, which those moments allow
+         * from the background; handled like a start by the system (the strategy in effect is kept).
+         */
+        fun startAuto(context: Context) {
+            ContextCompat.startForegroundService(context, Intent(context, TunnelService::class.java).setAction(ACTION_AUTO))
+        }
+
         fun stop() {
             instance?.stopTunnel()
         }
 
-        fun send(event: Engine.Event) {
-            instance?.engine?.send(event)
+        /** Whether Android keeps this tunnel always on (null: not known — the tunnel isn't running, or Android < 10). */
+        val alwaysOn: Boolean?
+            get() = instance?.takeIf { Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q }?.let { runCatching { it.isAlwaysOn }.getOrNull() }
+
+        /** Hands [event] to the running engine; false if there is none (not started yet, or the demo build). */
+        fun send(event: Engine.Event): Boolean {
+            val engine = instance?.engine ?: return false
+            engine.send(event)
+            return true
         }
 
         /** Re-creates the TUN interface (app exclusions) and regenerates the config. */
@@ -96,6 +117,18 @@ class TunnelService : VpnService(), Engine.Host {
     @Volatile
     private var network: Network? = null
 
+    /** Whether the system's own check of [network] passes (null: not known yet). */
+    @Volatile
+    private var validated: Boolean? = null
+
+    /** The screen turning on: the engine checks at once if no server is in use (someone may be waiting). */
+    private val screenReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            engine?.send(if (intent.action == Intent.ACTION_SCREEN_OFF) Engine.Event.ScreenOff else Engine.Event.ScreenOn)
+        }
+    }
+    private var screenWatched = false
+
     override val tunFd: Int get() = tun?.fd ?: 0
     /**
      * A callback can be missed or come before the network is usable: when none is known, ask the system
@@ -109,6 +142,15 @@ class TunnelService : VpnService(), Engine.Host {
             } != null
         }
     override fun isScreenOn(): Boolean = power.isInteractive
+    override fun networkKind(): String? = network?.let { n ->
+        val c = connectivity.getNetworkCapabilities(n) ?: return@let "other"
+        when {
+            c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cell"
+            c.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            else -> "other"
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -122,6 +164,9 @@ class TunnelService : VpnService(), Engine.Host {
             when (intent?.action) {
                 ACTION_STOP -> stopTunnel()
                 ACTION_FIND_BEST -> engine?.send(Engine.Event.FindBest)
+                ACTION_USE_BEST -> Repo.updateSettings { s ->
+                    s.copy(strategy = s.defaultStrategy.takeIf { it != app.borderless.data.Strategy.MANUAL } ?: app.borderless.data.Strategy.STABLE)
+                }
                 // ACTION_START, a restart by the system (null intent) and Always-on all start the tunnel.
                 else -> startTunnel(
                 intent?.getStringExtra(EXTRA_SERVER), byUser = intent?.action == ACTION_START,
@@ -154,8 +199,9 @@ class TunnelService : VpnService(), Engine.Host {
         if (byUser && serverId == null) Repo.updateSettings { app.borderless.data.EcoMath.startStrategy(it) }
         stopping = false
         AppLog.event(LText.of(R.string.ev_tunnel_on))
+        AutoStart.setWanted(this, true)
         TunnelState.set(TunnelStatus(phase = Phase.SEARCHING))
-        if (Repo.settings.value.statusIcon || mustForeground) goForeground()
+        if (Repo.settings.value.notify == NotifyMode.ALWAYS || mustForeground) goForeground()
 
         tun = establish()
         if (tun == null) {
@@ -166,20 +212,33 @@ class TunnelService : VpnService(), Engine.Host {
         }
         // Established: the system now holds the tunnel service, so without the status icon the
         // notification (if a start needed it) can go.
-        if (!Repo.settings.value.statusIcon) dropForeground()
+        if (Repo.settings.value.notify != NotifyMode.ALWAYS) dropForeground()
         network = underlying()
         watchNetworks()
+        if (!screenWatched) {
+            screenWatched = true
+            ContextCompat.registerReceiver(this, screenReceiver, IntentFilter(Intent.ACTION_SCREEN_ON).apply { addAction(Intent.ACTION_SCREEN_OFF) }, ContextCompat.RECEIVER_NOT_EXPORTED)
+        }
         // The notification shows phase and server only: don't redraw it for every new ping.
         statusJob = scope.launch {
-            TunnelState.status.distinctUntilChanged { a, b -> a.phase == b.phase && a.serverId == b.serverId && a.error == b.error }
-                .combine(Repo.settings.map { it.statusIcon to it.palette }.distinctUntilChanged()) { st, s -> st to s.first }
-                .collect { (st, icon) ->
-                    // The icon setting can change while connected: show or remove the notification.
-                    if (icon) {
-                        if (!foreground) Errors.guard("status icon", Unit, show = false) { goForeground() }
-                        Notifications.update(this@TunnelService, st)
-                    } else {
-                        dropForeground()
+            TunnelState.status.distinctUntilChanged { a, b -> a.phase == b.phase && a.serverId == b.serverId && a.error == b.error && a.unanswered == b.unanswered }
+                .combine(Repo.settings.map { it.notify to it.palette }.distinctUntilChanged()) { st, s -> st to s.first }
+                .collectLatest { (st, mode) ->
+                    // The setting can change while connected: show or remove the notification.
+                    when (mode) {
+                        NotifyMode.ALWAYS -> {
+                            if (!foreground) Errors.guard("status icon", Unit, show = false) { goForeground() }
+                            Notifications.update(this@TunnelService, st)
+                        }
+                        NotifyMode.UNCLEAR -> {
+                            dropForeground()
+                            // At once: when something doesn't load, the reason is already in the notification.
+                            Notifications.update(this@TunnelService, st)
+                        }
+                        NotifyMode.OFF -> {
+                            dropForeground()
+                            Notifications.update(this@TunnelService, st)
+                        }
                     }
                 }
         }
@@ -305,14 +364,19 @@ class TunnelService : VpnService(), Engine.Host {
         if (stopping) return
         stopping = true
         AppLog.event(LText.of(R.string.ev_tunnel_off))
+        // Turned off (by the user, or another app took the tunnel over): not to be started again by itself.
+        AutoStart.setWanted(this, false)
         scope.launch {
             runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
+            if (screenWatched) { screenWatched = false; runCatching { unregisterReceiver(screenReceiver) } }
             Errors.guard("stopping the engine", Unit) { engine?.stop() }
             engine = null
             StatsDb.phase(Phase.OFF, null)
             Activity.samplePower(force = true)
             StatsDb.flush()
             statusJob?.cancel()
+            // A notification posted without the foreground ("only while not through a server") goes too.
+            runCatching { getSystemService(android.app.NotificationManager::class.java).cancel(Notifications.ID) }
             runCatching { tun?.close() }
             tun = null
             TunnelState.set(TunnelStatus())
@@ -330,6 +394,7 @@ class TunnelService : VpnService(), Engine.Host {
     override fun onDestroy() {
         if (engine != null) {
             runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
+            if (screenWatched) { screenWatched = false; runCatching { unregisterReceiver(screenReceiver) } }
             runCatching { tun?.close() }
             TunnelState.set(TunnelStatus())
         }
@@ -361,9 +426,14 @@ class TunnelService : VpnService(), Engine.Host {
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(n: Network) = consider(n)
 
-        // A network can turn usable (internet capability, validation) after it was announced.
+        // A network can turn usable (internet capability, validation) after it was announced. On the network in use,
+        // the system's check passing again is the quickest sign that the internet is back.
         override fun onCapabilitiesChanged(n: Network, caps: NetworkCapabilities) {
-            if (n != network) consider(n)
+            if (n != network) return consider(n)
+            val v = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            val was = validated
+            validated = v
+            if (was != null && was != v) engine?.send(Engine.Event.Validated(v))
         }
 
         override fun onLost(n: Network) {
@@ -379,6 +449,7 @@ class TunnelService : VpnService(), Engine.Host {
             val changed = n != network
             network = n
             if (changed) {
+                validated = connectivity.getNetworkCapabilities(n)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
                 AppLog.debug(TAG, "default network: ${describe(n)}")
                 scope.launch { renew() }
             }

@@ -20,30 +20,27 @@ object Activity {
         PING_STALL(R.string.act_ping_stall, Group.PING),
         PING_VERIFY(R.string.act_ping_verify, Group.PING),
         PING_FAILED(R.string.act_ping_failed, Group.PING),
+        PING_WAKE(R.string.act_ping_wake, Group.PING),
         SCAN_BACKGROUND(R.string.act_scan_background, Group.SCAN, wake = true),
         SCAN_OPEN(R.string.act_scan_open, Group.SCAN, wake = true),
         SCAN_MANUAL(R.string.act_scan_manual, Group.SCAN),
         SCAN_ENGINE(R.string.act_scan_engine, Group.SCAN),
         /** Fresh pings to choose a server by a strategy the user just picked. */
         SCAN_STRATEGY(R.string.act_scan_strategy, Group.SCAN),
+        /** Servers a subscription update added, checked at once. */
+        SCAN_NEW(R.string.act_scan_new, Group.SCAN),
         RESCAN_SKIPPED(R.string.act_rescan_skipped, Group.SAVED),
         PROBE(R.string.act_probe, Group.PROBE),
         PROBE_EXPLORE(R.string.act_probe_explore, Group.PROBE),
         PROBE_RESCUE(R.string.act_probe_rescue, Group.PROBE),
         SUB_UPDATE(R.string.act_sub_update, Group.OTHER, wake = true),
-        COUNTRY(R.string.act_country, Group.OTHER),
-        DOH(R.string.act_doh, Group.OTHER),
         NET_CHECK(R.string.act_net_check, Group.OTHER),
-        /** Checking for new routing lists and downloading the changed categories. */
-        GEO_UPDATE(R.string.act_geo_update, Group.OTHER, wake = true),
         CORE_START(R.string.act_core_start, Group.LOCAL),
         DB_COMMIT(R.string.act_db_commit, Group.LOCAL),
         FILE_WRITE(R.string.act_file_write, Group.LOCAL),
         STATS_SAMPLE(R.string.act_stats_sample, Group.LOCAL),
         LOG_WRITE(R.string.act_log_write, Group.LOCAL),
         CURRENT_METER(R.string.act_current_meter, Group.LOCAL),
-        /** Measuring the CPU time of all the actions above (calibrated on the phone). */
-        TRACKING(R.string.act_tracking, Group.LOCAL),
         /** The rest of the app's CPU time while its screens are closed: Xray processing the user's traffic. */
         CORE_BASE(R.string.act_core_base, Group.LOCAL),
         /** The rest of the app's CPU time while it is open: its screens (and the core meanwhile). */
@@ -144,9 +141,7 @@ object Activity {
         val cpuDelta = (cpu - lastCpuMs).coerceAtLeast(0)
         lastCpuMs = cpu
         // CPU not spent in tracked actions: the core forwarding traffic, and the app's own screens.
-        val tracking = Energy.takeTrackingCpuMs()
-        addCost(Kind.TRACKING, radioMs = 0, cpuMs = tracking, mj = Energy.estimateMj(tracking, 0, false))
-        val base = (cpuDelta - Energy.takeAttributedCpu() - tracking).coerceAtLeast(0)
+        val base = (cpuDelta - Energy.takeAttributedCpu()).coerceAtLeast(0)
         // What the process does outside actions per second: taken out of the actions running meanwhile.
         if (lastBaseAt > 0) Energy.background(base, now - lastBaseAt)
         lastBaseAt = now

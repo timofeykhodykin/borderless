@@ -17,11 +17,13 @@ import java.util.zip.ZipOutputStream
 /**
  * The whole statistics database as a ZIP of CSV files (one per table) plus device / settings info,
  * for sending to the developer. No server names, addresses or links: servers appear only as their
- * internal ids, with group, protocol and country.
+ * internal ids, with group, protocol and country. With it go the failures kept for reporting
+ * ([Errors.export]: traces of bugs), and their count in the settings starts again.
  */
 object StatsExport {
     suspend fun build(context: Context): File = withContext(Dispatchers.IO) {
         StatsDb.flush()
+        val exportedAt = System.currentTimeMillis()
         val stamp = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US).format(Date())
         val file = File(File(context.cacheDir, "share").apply { mkdirs() }, "borderless-stats-$stamp.zip")
         ZipOutputStream(file.outputStream().buffered()).use { zip ->
@@ -43,7 +45,9 @@ object StatsExport {
                 }
             }
             for (t in StatsDb.TABLES) entry("$t.csv") { w -> StatsDb.dumpCsv(t, w) }
+            entry("errors.txt") { it.write(Errors.export()) }
         }
+        Errors.markReported(exportedAt)
         file
     }
 
@@ -54,7 +58,7 @@ object StatsExport {
             appendLine("Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("Exported: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())} (${TimeZone.getDefault().id})")
             appendLine()
-            appendLine("strategy=${s.strategy} default=${s.defaultStrategy} autoActive=${s.autoActive} routing=${s.routingEnabled}/${s.routingMode} adFilter=${s.adFilter}")
+            appendLine("strategy=${s.strategy} default=${s.defaultStrategy} autoActive=${s.autoActive} countries=${s.countries.sorted().joinToString(",").ifEmpty { "any" }} routing=${s.routingEnabled}/${s.routingMode} adFilter=${s.adFilter}")
             appendLine("healthIntervalSec=${s.healthIntervalSec} latencyCheckMin=${s.latencyCheckMin} rescanMin=${s.rescanIntervalMin} pauseScansScreenOff=${s.pauseScansScreenOff}")
             appendLine("probeTimeoutSec=${s.probeTimeoutSec} concurrency=${s.effectiveConcurrency} measureCurrent=${s.measureCurrent} statsDays=${s.statsDays}")
             appendLine()

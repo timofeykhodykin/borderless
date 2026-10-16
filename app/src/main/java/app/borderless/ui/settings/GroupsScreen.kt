@@ -56,7 +56,7 @@ import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
-import androidx.compose.material3.AlertDialog
+import app.borderless.ui.AppAlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -281,7 +281,8 @@ fun GroupsScreen(onBack: () -> Unit, onSubStats: (String) -> Unit = {}, onServer
         ) { Repo.renameSubscription(sub.id, it) }
     }
     deletingServer?.let { srv ->
-        AlertDialog(
+        AppAlertDialog(
+            irreversible = true,
             onDismissRequest = { deletingServer = null },
             containerColor = Palette.background,
             title = { Text(stringResource(R.string.delete_server_q)) },
@@ -298,7 +299,8 @@ fun GroupsScreen(onBack: () -> Unit, onSubStats: (String) -> Unit = {}, onServer
         )
     }
     deletingSub?.let { sub ->
-        AlertDialog(
+        AppAlertDialog(
+            irreversible = true,
             onDismissRequest = { deletingSub = null },
             containerColor = Palette.background,
             title = { Text(stringResource(R.string.delete_sub_q)) },
@@ -310,7 +312,8 @@ fun GroupsScreen(onBack: () -> Unit, onSubStats: (String) -> Unit = {}, onServer
     if (creating) NameDialog(stringResource(R.string.group_new), "", onDismiss = { creating = false }) { Repo.createGroup(it) }
     renaming?.let { g -> NameDialog(stringResource(R.string.group_rename), g.name ?: Repo.groupName(g), onDismiss = { renaming = null }) { Repo.renameGroup(g.id, it) } }
     deleting?.let { g ->
-        AlertDialog(
+        AppAlertDialog(
+            irreversible = true,
             onDismissRequest = { deleting = null },
             containerColor = Palette.background,
             title = { Text(stringResource(R.string.group_delete_q)) },
@@ -654,7 +657,7 @@ fun NameDialog(
     onSave: (String) -> Unit,
 ) {
     var text by remember { mutableStateOf(initial) }
-    AlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Palette.background,
         title = { Text(title) },

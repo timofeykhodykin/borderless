@@ -42,7 +42,9 @@ object Energy {
      * One tracked action. [exchanges] (request exchanges, e.g. probes of a scan) and [bytes] transferred size its
      * Wi-Fi radio time; set them before [end] when they are known only then.
      */
-    class Span(val kind: Activity.Kind, val start: Long, internal val cpuId: Long, val metered: Boolean) {
+    class Span(kind: Activity.Kind, val start: Long, internal val cpuId: Long, val metered: Boolean) {
+        /** May change before [end] when what the action turned out to be is known only then (a check that downloaded). */
+        @Volatile var kind = kind
         @Volatile var exchanges = 1
         @Volatile var bytes = 0L
     }
@@ -66,34 +68,6 @@ object Energy {
     var attributedTotalMs = 0L
         private set
 
-    /** Tracked actions since the last power sample, and what tracking one costs (see [calibrate]). */
-    private val spans = java.util.concurrent.atomic.AtomicLong()
-
-    @Volatile
-    var spanCostNs = 5_000L
-        private set
-
-    /**
-     * Measures the bookkeeping itself: times many empty begin/end pairs (two CPU-time reads and the
-     * in-memory sums) and keeps the cost of one. Takes a few milliseconds, once per process start.
-     */
-    fun calibrate() {
-        val n = 2_000
-        val sink = LongArray(5)
-        repeat(200) { Process.getElapsedCpuTime() } // warm up
-        val t0 = System.nanoTime()
-        repeat(n) {
-            val a = Process.getElapsedCpuTime()
-            val b = Process.getElapsedCpuTime()
-            synchronized(sink) { sink[3] += b - a; sink[0]++ }
-        }
-        spanCostNs = ((System.nanoTime() - t0) / n).coerceAtLeast(1)
-        AppLog.debug("Energy", "bookkeeping costs ${spanCostNs / 1000.0} µs per tracked action")
-    }
-
-    /** CPU ms the bookkeeping of the actions since the last call took (counted as its own cost). */
-    fun takeTrackingCpuMs(): Long = spans.getAndSet(0) * spanCostNs / 1_000_000
-
     fun begin(kind: Activity.Kind, exchanges: Int = 1): Span {
         val now = System.currentTimeMillis()
         return Span(kind, now, cpuShare.open(Process.getElapsedCpuTime(), now, kind.name), Power.metered).also { it.exchanges = exchanges }
@@ -109,7 +83,6 @@ object Energy {
         }
         val mj = estimateMj(cpu, radio, span.metered)
         synchronized(this) { attributedCpuMs += cpu; attributedTotalMs += cpu }
-        spans.incrementAndGet()
         Activity.addCost(span.kind, radioMs = radio, cpuMs = cpu, mj = mj)
         CurrentMeter.measure(span, now, mj)
     }

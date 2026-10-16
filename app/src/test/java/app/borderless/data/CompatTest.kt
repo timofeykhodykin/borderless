@@ -27,6 +27,8 @@ class CompatTest {
             StoreJson.decodeFromString(MapSerializer(String.serializer(), PingRecord.serializer()), read(v, "pings.json"))
             StoreJson.decodeFromString(AppSettings.serializer(), read(v, "settings.json"))
             StoreJson.decodeFromString(AutoState.serializer(), read(v, "auto.json"))
+            // Own zones exist since 2.0.0.
+            if (File(root, "$v/zones.json").isFile) StoreJson.decodeFromString(ListSerializer(CustomZone.serializer()), read(v, "zones.json"))
         }
     }
 

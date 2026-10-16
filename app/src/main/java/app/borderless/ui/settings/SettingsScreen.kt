@@ -15,6 +15,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import app.borderless.ui.theme.Palette
 import androidx.compose.material.icons.rounded.RssFeed
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Lan
 import androidx.compose.material.icons.rounded.Insights
@@ -100,6 +106,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onApps: () -> Unit,
     onLog: () -> Unit,
+    onZone: (String) -> Unit = {},
 ) {
     val s by Repo.settings.collectAsStateWithLifecycle()
     val subs by Repo.subscriptions.collectAsStateWithLifecycle()
@@ -107,7 +114,8 @@ fun SettingsScreen(
     DisposableEffect(Unit) {
         onDispose { if (Repo.settings.value.tunnelKey() != initial) TunnelService.reconfigure() }
     }
-    fun set(f: (AppSettings) -> AppSettings) = Repo.updateSettings(f)
+    // The settings search (on the list of pages); kept while a page found by it is open.
+    var query by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
 
     // A page slides in from the right over the list of categories, and back out to the right.
     AnimatedContent(
@@ -121,15 +129,20 @@ fun SettingsScreen(
         label = "settings",
     ) { current ->
         if (current == null) {
+            val q = SettingsQuery.of(query)
+            // A search hands Back to clearing it first.
+            androidx.activity.compose.BackHandler(enabled = query.isNotEmpty()) { query = "" }
             ScreenScaffold(stringResource(R.string.settings), onBack) {
+                SearchField(query, { query = it })
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                    Spacer(Modifier.height(8.dp))
-                    SettingsRoot(s, subs.size, onPage)
-                    SupportSection()
-                    Section(stringResource(R.string.sec_about)) {
-                        InfoRow(stringResource(R.string.set_version), BuildConfig.VERSION_NAME)
-                        InfoRow(stringResource(R.string.set_core), remember { CoreEnv.version().substringBefore(" (").ifEmpty { BuildConfig.XRAY_CORE_VERSION } })
-                        AboutProjectRow()
+                    if (q == null) UpdateOffer()
+                    if (q != null) {
+                        SearchResults(q, s, subs, onPage, onApps, onLog, onZone)
+                    } else {
+                        Spacer(Modifier.height(4.dp))
+                        SettingsRoot(s, subs.size, onPage)
+                        SupportSection()
+                        AboutSection()
                     }
                     Spacer(Modifier.height(40.dp))
                 }
@@ -137,20 +150,124 @@ fun SettingsScreen(
         } else {
             ScreenScaffold(stringResource(current.title), onBack = { onPage(null) }) {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                    when (current) {
-                        SettingsPage.SERVER -> ServerPage(s, ::set)
-                        SettingsPage.CHECKS -> ChecksPage(s, ::set)
-                        SettingsPage.ECO -> EcoPage(s)
-                        SettingsPage.ROUTING -> RoutingPage(s, ::set, onApps)
-                        SettingsPage.SUBS -> SubsPage(s, subs)
-                        SettingsPage.CONNECTION -> ConnectionPage(s, ::set)
-                        SettingsPage.INTERFACE -> InterfacePage(s, ::set)
-                        SettingsPage.DIAGNOSTICS -> DiagnosticsPage(s, ::set, onLog)
-                    }
+                    PageContent(current, s, subs, onApps, onLog, onZone)
                     Spacer(Modifier.height(40.dp))
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun PageContent(page: SettingsPage, s: AppSettings, subs: List<app.borderless.data.Subscription>, onApps: () -> Unit, onLog: () -> Unit, onZone: (String) -> Unit) {
+    fun set(f: (AppSettings) -> AppSettings) = Repo.updateSettings(f)
+    when (page) {
+        SettingsPage.SERVER -> ServerPage(s, ::set)
+        SettingsPage.CHECKS -> ChecksPage(s, ::set)
+        SettingsPage.ECO -> EcoPage(s)
+        SettingsPage.ROUTING -> RoutingPage(s, ::set, onApps, onZone)
+        SettingsPage.SUBS -> SubsPage(s, subs)
+        SettingsPage.CONNECTION -> ConnectionPage(s, ::set)
+        SettingsPage.INTERFACE -> InterfacePage(s, ::set)
+        SettingsPage.DIAGNOSTICS -> DiagnosticsPage(s, ::set, onLog)
+    }
+}
+
+@Composable
+private fun AboutSection() {
+    Section(stringResource(R.string.sec_about)) {
+        InfoRow(stringResource(R.string.set_version), BuildConfig.VERSION_NAME)
+        UpdateRow()
+        InfoRow(stringResource(R.string.set_core), remember { CoreEnv.version().substringBefore(" (").ifEmpty { BuildConfig.XRAY_CORE_VERSION } })
+        AboutProjectRow()
+    }
+}
+
+/** The search box at the top of the settings (and the list of countries): [placeholder] says what it finds. */
+@Composable
+internal fun SearchField(query: String, onChange: (String) -> Unit, placeholder: String = stringResource(R.string.set_search)) {
+    val shape = RoundedCornerShape(16.dp)
+    val focus = androidx.compose.ui.platform.LocalFocusManager.current
+    androidx.compose.foundation.text.BasicTextField(
+        value = query,
+        onValueChange = onChange,
+        singleLine = true,
+        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, color = Palette.text, fontFamily = app.borderless.ui.theme.Body),
+        cursorBrush = androidx.compose.ui.graphics.SolidColor(Palette.accent),
+        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { focus.clearFocus() }),
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 4.dp).fillMaxWidth(),
+        decorationBox = { field ->
+            androidx.compose.foundation.layout.Row(
+                Modifier.fillMaxWidth().clip(shape).background(Palette.card).padding(start = 14.dp, end = 4.dp).height(48.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            ) {
+                androidx.compose.material3.Icon(Icons.Rounded.Search, null, tint = Palette.textMuted, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(10.dp))
+                androidx.compose.foundation.layout.Box(Modifier.weight(1f)) {
+                    if (query.isEmpty()) Text(placeholder, fontSize = 16.sp, color = Palette.textMuted)
+                    field()
+                }
+                if (query.isNotEmpty()) {
+                    androidx.compose.material3.IconButton({ onChange("") }) {
+                        androidx.compose.material3.Icon(Icons.Rounded.Close, stringResource(R.string.set_search_clear), tint = Palette.textSecondary)
+                    }
+                }
+            }
+        },
+    )
+}
+
+/**
+ * Every page drawn with the search on: only matching rows show, sections and pages without any vanish, each
+ * page under its own heading (tap it to open the whole page). The rows work as on their pages.
+ */
+@Composable
+private fun SearchResults(
+    q: SettingsQuery,
+    s: AppSettings,
+    subs: List<app.borderless.data.Subscription>,
+    onPage: (SettingsPage?) -> Unit,
+    onApps: () -> Unit,
+    onLog: () -> Unit,
+    onZone: (String) -> Unit = {},
+) {
+    CollapseIfEmpty(
+        empty = {
+            Text(
+                stringResource(R.string.set_search_none), fontSize = 15.sp, color = Palette.textSecondary,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 24.dp),
+            )
+        },
+    ) {
+        Column {
+            SettingsPage.entries.forEach { page ->
+                val title = stringResource(page.title)
+                CompositionLocalProvider(LocalSettingsQuery provides q.inside(title)) {
+                    CollapseIfEmpty(header = { PageHeading(page, title) { onPage(page) } }) {
+                        Column { PageContent(page, s, subs, onApps, onLog, onZone) }
+                    }
+                }
+            }
+            CompositionLocalProvider(LocalSettingsQuery provides q) { AboutSection() }
+        }
+    }
+}
+
+@Composable
+private fun PageHeading(page: SettingsPage, title: String, onClick: () -> Unit) {
+    androidx.compose.foundation.layout.Row(
+        Modifier.padding(start = 16.dp, end = 16.dp, top = 22.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick).padding(horizontal = 4.dp, vertical = 6.dp),
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+    ) {
+        androidx.compose.foundation.layout.Box(
+            Modifier.size(30.dp).clip(androidx.compose.foundation.shape.CircleShape).background(Palette.accentSoft),
+            contentAlignment = androidx.compose.ui.Alignment.Center,
+        ) { androidx.compose.material3.Icon(page.icon, null, tint = Palette.accentStrong, modifier = Modifier.size(17.dp)) }
+        Spacer(Modifier.width(10.dp))
+        Text(title, fontSize = 18.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, fontFamily = app.borderless.ui.theme.Display, color = Palette.text, modifier = Modifier.weight(1f))
+        androidx.compose.material3.Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = Palette.textMuted)
     }
 }
 
@@ -182,6 +299,7 @@ private val SettingsPage.icon: ImageVector
 @Composable
 private fun SettingsRoot(s: AppSettings, subscriptions: Int, onPage: (SettingsPage) -> Unit) {
     val ecoEstimate by Eco.estimate.collectAsStateWithLifecycle()
+    val errors by app.borderless.data.Errors.unreported.collectAsStateWithLifecycle(0)
     val context = LocalContext.current
     fun strategy(v: Strategy) = context.getString(
         when (v) {
@@ -197,7 +315,9 @@ private fun SettingsRoot(s: AppSettings, subscriptions: Int, onPage: (SettingsPa
         SettingsPage.ECO to (ecoEstimate?.percent?.let { stringResource(if (s.ecoOn) R.string.set_sum_eco_on else R.string.set_sum_eco_off, it) }
             ?: stringResource(if (s.ecoOn) R.string.set_sum_eco_on_plain else R.string.set_sum_eco_off_plain)),
         SettingsPage.ROUTING to if (!s.routingEnabled) stringResource(R.string.set_sum_off)
-        else listOf(
+        else listOfNotNull(
+            // Chosen zones still waiting for their lists come first: the rest of the line doesn't apply yet.
+            stringResource(R.string.set_sum_lists_pending).takeIf { Regions.of(s.regions).any { !Regions.ready(it) } },
             stringResource(if (s.routingMode == RoutingMode.REGION_DIRECT) R.string.mode_region_direct else R.string.mode_listed),
             Regions.of(s.regions).joinToString(" ") { it.label }.ifEmpty { stringResource(R.string.zones_none) },
         ).joinToString(" · "),
@@ -208,6 +328,8 @@ private fun SettingsRoot(s: AppSettings, subscriptions: Int, onPage: (SettingsPa
             stringResource(paletteName(s.palette)), languageLabel(context), stringResource(R.string.set_generic_names).takeIf { s.genericNames },
         ).joinToString(" · "),
         SettingsPage.DIAGNOSTICS to listOfNotNull(
+            // Errors waiting to be reported first: the rest is how it is set up.
+            errors.takeIf { it > 0 }?.let { androidx.compose.ui.res.pluralStringResource(R.plurals.set_sum_errors, it, it) },
             stringResource(R.string.set_sum_stats, s.statsDays),
             stringResource(R.string.set_measure_current).takeIf { s.measureCurrent },
         ).joinToString(" · "),
@@ -238,6 +360,13 @@ private fun ServerPage(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Un
             // (the frugal counterpart while the battery saving mode is on).
             set { val n = it.copy(defaultStrategy = v); if (n.strategy == Strategy.MANUAL) n else app.borderless.data.EcoMath.startStrategy(n) }
         }
+        val unprotected = remember(Repo.servers.value) { Repo.servers.value.count { app.borderless.data.Insecurity.of(it).isNotEmpty() } }
+        SwitchRow(stringResource(R.string.set_avoid_insecure), stringResource(R.string.set_avoid_insecure_sub, unprotected), s.avoidInsecure) { v ->
+            set { it.copy(avoidInsecure = v) }
+        }
+        SwitchRow(stringResource(R.string.set_ping_all_best), stringResource(R.string.set_ping_all_best_sub), s.pingAllSwitches) { v ->
+            set { it.copy(pingAllSwitches = v) }
+        }
     }
     Section(stringResource(R.string.set_sub_failure)) {
         NumberRow(stringResource(R.string.set_fails), null, s.failThreshold, 1..10) { v -> set { it.copy(failThreshold = v) } }
@@ -248,14 +377,15 @@ private fun ServerPage(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Un
                 NoServerAction.PAUSE to stringResource(R.string.no_server_pause),
             ),
         ) { v -> set { it.copy(noServerAction = v) } }
-        NumberRow(stringResource(R.string.set_retry), null, s.retryIntervalSec, 5..600, sec, display = ::secondsText) { v -> set { it.copy(retryIntervalSec = v) } }
+        NumberRow(stringResource(R.string.set_retry), stringResource(R.string.set_retry_sub), s.retryIntervalSec, 5..600, sec, display = ::secondsText) { v -> set { it.copy(retryIntervalSec = v) } }
     }
     Section(stringResource(R.string.set_sub_stable)) {
         InfoNote(stringResource(R.string.set_stable_params))
         NumberRow(stringResource(R.string.set_rescan), stringResource(R.string.set_rescan_sub), s.rescanIntervalMin, 1..240, min, display = ::minutesText) { v -> set { it.copy(rescanIntervalMin = v) } }
         NumberRow(stringResource(R.string.set_gain_pct), stringResource(R.string.set_gain_pct_sub), s.switchGainPercent, 0..95, "%") { v -> set { it.copy(switchGainPercent = v) } }
-        NumberRow(stringResource(R.string.set_gain_ms), null, s.switchGainMs, 0..2000, ms) { v -> set { it.copy(switchGainMs = v) } }
+        NumberRow(stringResource(R.string.set_gain_ms), stringResource(R.string.set_gain_ms_sub), s.switchGainMs, 0..2000, ms) { v -> set { it.copy(switchGainMs = v) } }
         NumberRow(stringResource(R.string.set_min_stay), stringResource(R.string.set_min_stay_sub), s.minStayMin, 0..240, min, display = ::minutesText) { v -> set { it.copy(minStayMin = v) } }
+        InfoNote(stringResource(R.string.set_stable_weights_note))
     }
 }
 
@@ -269,6 +399,7 @@ private fun ChecksPage(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Un
     }
     Section(stringResource(R.string.set_sub_scans)) {
         SwitchRow(stringResource(R.string.set_pause_screen), stringResource(R.string.set_pause_screen_sub), s.pauseScansScreenOff) { v -> set { it.copy(pauseScansScreenOff = v) } }
+        SwitchRow(stringResource(R.string.set_careful), stringResource(R.string.set_careful_sub), s.carefulScans) { v -> set { it.copy(carefulScans = v) } }
         NumberRow(stringResource(R.string.set_timeout), null, s.probeTimeoutSec, 2..30, sec, display = ::secondsText) { v -> set { it.copy(probeTimeoutSec = v) } }
         NumberRow(
             stringResource(R.string.set_concurrency),
@@ -305,7 +436,7 @@ private fun EcoPage(s: AppSettings) {
 }
 
 @Composable
-private fun RoutingPage(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Unit, onApps: () -> Unit) {
+private fun RoutingPage(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Unit, onApps: () -> Unit, onZone: (String) -> Unit) {
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     Section(stringResource(R.string.set_sub_general)) {
@@ -317,13 +448,20 @@ private fun RoutingPage(s: AppSettings, set: ((AppSettings) -> AppSettings) -> U
                 RoutingMode.LISTED_ONLY to stringResource(R.string.mode_listed),
             ),
         ) { v -> set { it.copy(routingMode = v) } }
-        SwitchRow(stringResource(R.string.set_ads_filter), stringResource(R.string.set_ads_filter_sub), s.adFilter) { v -> set { it.copy(adFilter = v) } }
+        // Its list comes with the others (the app ships none): until then the filter has nothing to go by.
+        val geoState by app.borderless.core.GeoLists.state.collectAsStateWithLifecycle()
+        val adsReady = remember(geoState) { app.borderless.data.GeoFile.usable("geosite:category-ads-all") }
+        SwitchRow(
+            stringResource(R.string.set_ads_filter),
+            stringResource(R.string.set_ads_filter_sub) + if (adsReady) "" else " " + stringResource(R.string.set_ads_filter_wait),
+            s.adFilter,
+        ) { v -> set { it.copy(adFilter = v) } }
     }
     Section(stringResource(R.string.set_zones)) {
         val geo by app.borderless.core.GeoLists.state.collectAsStateWithLifecycle()
         val geoBusy by app.borderless.core.GeoLists.busy.collectAsStateWithLifecycle()
         val geoWork by app.borderless.core.GeoLists.work.collectAsStateWithLifecycle()
-        Regions.all.forEach { region ->
+        Regions.builtIn.forEach { region ->
             // A zone takes part only once its lists are here (some are downloaded): until then its switch is off and
             // locked, and the row says what is going on.
             val ready = remember(geo, region) { Regions.ready(region) }
@@ -348,12 +486,9 @@ private fun RoutingPage(s: AppSettings, set: ((AppSettings) -> AppSettings) -> U
                 ActionRow(stringResource(R.string.zone_lists_retry)) { scope.launchSafe("routing lists") { app.borderless.core.GeoLists.updateIfDue(force = true) } }
             }
         }
-        Text(
-            stringResource(if (s.routingMode == RoutingMode.REGION_DIRECT) R.string.zones_note_direct else R.string.zones_note_listed),
-            fontSize = 13.5.sp, color = Palette.textMuted,
-            modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 14.dp),
-        )
+        InfoNote(stringResource(if (s.routingMode == RoutingMode.REGION_DIRECT) R.string.zones_note_direct else R.string.zones_note_listed))
     }
+    CustomZonesSection(s, onZone)
     GeoListsSection(s, set)
     Section(stringResource(R.string.set_sub_exceptions)) {
         NavRow(stringResource(R.string.set_apps), stringResource(R.string.set_apps_sub, s.appsDirect.size, s.appsTunnel.size), onApps)
@@ -375,18 +510,24 @@ private fun GeoListsSection(s: AppSettings, set: ((AppSettings) -> AppSettings) 
     val busy by app.borderless.core.GeoLists.busy.collectAsStateWithLifecycle()
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     Section(stringResource(R.string.set_geo_title)) {
-        val date = if (state.updatedAt > 0) java.text.SimpleDateFormat("d MMM yyyy", app.borderless.Res.locale).format(java.util.Date(state.updatedAt)) else "—"
+        // Nothing downloaded yet (the app ships no lists): said plainly instead of a date.
+        val date = if (state.updatedAt > 0) java.text.SimpleDateFormat("d MMM yyyy", app.borderless.Res.locale).format(java.util.Date(state.updatedAt)) else null
         val checked = if (state.checkedAt > 0) android.text.format.DateUtils.getRelativeTimeSpanString(state.checkedAt).toString().lowercase()
         else stringResource(R.string.set_geo_never)
         ActionRow(
             stringResource(R.string.set_geo_update),
             when {
                 busy -> stringResource(R.string.subs_updating)
+                date == null && state.lastError != null -> stringResource(R.string.set_geo_none) + "\n" + stringResource(R.string.set_geo_failed, state.lastError!!)
+                date == null -> stringResource(R.string.set_geo_none)
                 state.lastError != null -> stringResource(R.string.set_geo_state, date, checked) + "\n" + stringResource(R.string.set_geo_failed, state.lastError!!)
                 else -> stringResource(R.string.set_geo_state, date, checked)
             },
         ) { if (!busy) scope.launchSafe("updating routing lists") { app.borderless.core.GeoLists.updateIfDue(force = true) } }
-        NumberRow(stringResource(R.string.set_geo_days), stringResource(R.string.set_geo_days_sub), s.geoUpdateDays, 0..60, stringResource(R.string.unit_days)) { v ->
+        NumberRow(
+            stringResource(R.string.set_geo_days), stringResource(R.string.set_geo_days_sub), s.geoUpdateDays, 0..60, stringResource(R.string.unit_days),
+            display = { v -> if (v == 0) "0" else app.borderless.data.Units.durationText(v * 86_400L) },
+        ) { v ->
             set { it.copy(geoUpdateDays = v) }
         }
     }
@@ -428,11 +569,15 @@ private fun SubsPage(s: AppSettings, subs: List<app.borderless.data.Subscription
                 Repo.updateSettings { it.copy(userAgent = AppSettings().userAgent) }
             }
         }
+        SwitchRow(stringResource(R.string.set_send_model), stringResource(R.string.set_send_model_sub), s.sendDeviceModel) { v ->
+            Repo.updateSettings { it.copy(sendDeviceModel = v) }
+        }
     }
 }
 
 @Composable
 private fun ConnectionPage(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Unit) {
+    Section(stringResource(R.string.set_sub_start)) { AlwaysOnRow() }
     Section("DNS") {
         TextRow(stringResource(R.string.set_remote_dns), s.remoteDns) { v -> set { it.copy(remoteDns = v.ifBlank { AppSettings().remoteDns }) } }
         TextRow(
@@ -451,21 +596,37 @@ private fun ConnectionPage(s: AppSettings, set: ((AppSettings) -> AppSettings) -
 @Composable
 private fun InterfacePage(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Unit) {
     Section(stringResource(R.string.set_palette)) {
-        PaletteChooser(s.palette) { id -> set { it.copy(palette = id) } }
+        // Searching: found by the section's title or a scheme's name.
+        val names = app.borderless.ui.theme.Schemes.all.map { stringResource(paletteName(it.id)) }
+        if (LocalSettingsQuery.current?.matches(stringResource(R.string.set_palette), *names.toTypedArray()) != false) {
+            PaletteChooser(s.palette) { id -> set { it.copy(palette = id) } }
+        }
     }
     Section(stringResource(R.string.set_cat_interface)) {
         LanguageRow()
         SwitchRow(stringResource(R.string.set_generic_names), stringResource(R.string.set_generic_names_sub), s.genericNames) { v ->
             set { it.copy(genericNames = v) }
         }
+        val context = androidx.compose.ui.platform.LocalContext.current
+        val secure = remember { app.borderless.ui.canConfirm(context) }
+        SwitchRow(
+            stringResource(R.string.set_confirm_share),
+            stringResource(if (secure) R.string.set_confirm_share_sub else R.string.set_confirm_share_no_lock),
+            s.confirmShare && secure, enabled = secure,
+        ) { v -> set { it.copy(confirmShare = v) } }
         if (s.genericNames) {
             SwitchRow(stringResource(R.string.set_custom_over_generic), stringResource(R.string.set_custom_over_generic_sub), s.customOverGeneric) { v ->
                 set { it.copy(customOverGeneric = v) }
             }
         }
-        SwitchRow(stringResource(R.string.set_status_icon), stringResource(R.string.set_status_icon_sub), s.statusIcon) { v ->
-            set { it.copy(statusIcon = v) }
-        }
+        ChoiceRow(
+            stringResource(R.string.set_notify), s.notify,
+            listOf(
+                app.borderless.data.NotifyMode.OFF to stringResource(R.string.set_notify_off),
+                app.borderless.data.NotifyMode.UNCLEAR to stringResource(R.string.set_notify_unclear),
+                app.borderless.data.NotifyMode.ALWAYS to stringResource(R.string.set_notify_always),
+            ),
+        ) { v -> set { it.copy(notifyMode = v) } }
         AddTileRow()
     }
 }
@@ -474,7 +635,14 @@ private fun InterfacePage(s: AppSettings, set: ((AppSettings) -> AppSettings) ->
 private fun DiagnosticsPage(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Unit, onLog: () -> Unit) {
     Section(stringResource(R.string.log_title)) {
         NavRow(stringResource(R.string.log_title), null, onLog)
-        SwitchRow(stringResource(R.string.set_verbose), stringResource(R.string.set_verbose_sub), s.verboseLog) { v -> set { it.copy(verboseLog = v) } }
+        SwitchRow(stringResource(R.string.set_verbose), stringResource(R.string.set_verbose_sub), s.verboseLog) { v -> set { it.copy(verboseLog = v, verboseSince = if (v) System.currentTimeMillis() else 0) } }
+        // Failures caused by bugs, counted until the statistics export takes them along (see Errors).
+        val errors by app.borderless.data.Errors.unreported.collectAsStateWithLifecycle(0)
+        InfoRow(
+            stringResource(R.string.set_errors), errors.toString(), stringResource(R.string.set_errors_sub),
+            if (errors > 0) Palette.danger else Palette.textSecondary,
+        )
+        ClearLogRow()
     }
     Section(stringResource(R.string.stats)) {
         // How much space the statistics take (database with its write-ahead log).
@@ -503,11 +671,32 @@ private fun languageName(tag: String): String {
 }
 
 @Composable
+private fun ClearLogRow() {
+    var ask by remember { mutableStateOf(false) }
+    ActionRow(stringResource(R.string.set_clear_log), stringResource(R.string.set_clear_log_sub)) { ask = true }
+    if (ask) {
+        app.borderless.ui.AppAlertDialog(
+            irreversible = true,
+            onDismissRequest = { ask = false },
+            containerColor = Palette.background,
+            title = { androidx.compose.material3.Text(stringResource(R.string.clear_log_q)) },
+            confirmButton = {
+                androidx.compose.material3.TextButton({ app.borderless.data.AppLog.clear(); ask = false }) {
+                    androidx.compose.material3.Text(stringResource(R.string.clear), color = Palette.danger)
+                }
+            },
+            dismissButton = { androidx.compose.material3.TextButton({ ask = false }) { androidx.compose.material3.Text(stringResource(R.string.cancel)) } },
+        )
+    }
+}
+
+@Composable
 private fun ClearStatsRow() {
     var ask by remember { mutableStateOf(false) }
     NavRow(stringResource(R.string.clear_stats)) { ask = true }
     if (ask) {
-        androidx.compose.material3.AlertDialog(
+        app.borderless.ui.AppAlertDialog(
+            irreversible = true,
             onDismissRequest = { ask = false },
             containerColor = app.borderless.ui.theme.Palette.background,
             title = { androidx.compose.material3.Text(stringResource(R.string.clear_stats_q)) },
@@ -557,20 +746,26 @@ private fun ExportStatsRow() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
+    val unlock = app.borderless.ui.rememberUnlock()
     NavRow(
         stringResource(R.string.set_export_stats),
         stringResource(if (busy) R.string.set_export_busy else R.string.set_export_stats_sub),
     ) {
         if (busy) return@NavRow
         busy = true
-        scope.launchSafe("exporting statistics", finally = { busy = false }) {
-            val file = app.borderless.data.StatsExport.build(context)
-            val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", file)
-            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).setType("application/zip")
-                .putExtra(android.content.Intent.EXTRA_STREAM, uri)
-                .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            context.startActivity(android.content.Intent.createChooser(intent, context.getString(R.string.set_export_stats)))
-        }
+        unlock({ export(scope, context) { busy = false } }, { busy = false })
+    }
+}
+
+/** Builds the statistics export and offers it to other apps; [done] when it was handed over or failed. */
+private fun export(scope: kotlinx.coroutines.CoroutineScope, context: android.content.Context, done: () -> Unit) {
+    scope.launchSafe("exporting statistics", finally = done) {
+        val file = app.borderless.data.StatsExport.build(context)
+        val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).setType("application/zip")
+            .putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        context.startActivity(android.content.Intent.createChooser(intent, context.getString(R.string.set_export_stats)))
     }
 }
 
@@ -623,5 +818,29 @@ private fun AddTileRow() {
                 context.mainExecutor,
             ) { }
         }
+    }
+}
+
+/**
+ * Android's always-on setting for this app (it starts the tunnel with the phone and restarts it): its state while the
+ * tunnel runs (read again when the screen comes back from the system settings) and the way there.
+ */
+@Composable
+internal fun AlwaysOnRow() {
+    val context = LocalContext.current
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    val state by lifecycle.currentStateFlow.collectAsStateWithLifecycle()
+    val on = remember(state) { app.borderless.service.TunnelService.alwaysOn }
+    ActionRow(
+        stringResource(R.string.set_always_on),
+        stringResource(when (on) { true -> R.string.set_always_on_yes; false -> R.string.set_always_on_no; null -> R.string.set_always_on_unknown }),
+    ) { openAlwaysOnSettings(context) }
+    InfoNote(stringResource(R.string.set_always_on_note))
+}
+
+/** The system's list of tunnel apps, where always-on is set. */
+fun openAlwaysOnSettings(context: Context) {
+    app.borderless.data.Errors.guard("opening the system settings", Unit) {
+        context.startActivity(android.content.Intent(android.provider.Settings.ACTION_VPN_SETTINGS).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 }

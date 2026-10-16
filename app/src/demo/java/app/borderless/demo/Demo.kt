@@ -2,6 +2,8 @@ package app.borderless.demo
 
 import android.content.Context
 import app.borderless.core.Phase
+import app.borderless.core.Prober
+import kotlinx.coroutines.delay
 import app.borderless.core.TunnelState
 import app.borderless.core.TunnelStatus
 import app.borderless.data.Activity
@@ -25,6 +27,15 @@ object Demo {
     )
 
     fun seed(context: Context) {
+        // Scans answer with each server's usual ping after about that long (one never answers), so the main
+        // screen's scan animation can be shown without any network.
+        Prober.standIn = { server ->
+            val i = Repo.servers.value.indexOfFirst { it.id == server.id }
+            val base = cities.getOrNull(i)?.second ?: listOf(97, 132).getOrElse(i - cities.size) { 150 }
+            val r = Random(System.nanoTime())
+            if (base == 0) { delay(2_500); Prober.Outcome(null, true) }
+            else { val ms = base + r.nextInt(-6, 12); delay(ms * 6L + r.nextLong(200, 900)); Prober.Outcome(ms, false) }
+        }
         if (Repo.servers.value.isNotEmpty()) { showConnected(); return }
         val now = System.currentTimeMillis()
         val group = Repo.createGroup("Work")
@@ -76,8 +87,11 @@ object Demo {
             StatsDb.phase(ph, srv, p)
             p += StatsDb.HEARTBEAT_MS
         }
+        // Connections after a check of servers, with the chosen one's place in the check order.
+        StatsDb.event(StatsDb.Event.INITIAL, current, ts = start + 18 * 60_000L, pos = 1 to all.size)
+        StatsDb.event(StatsDb.Event.INITIAL, current, ts = start + 9 * 3_600_000L, pos = 2 to all.size)
         StatsDb.event(StatsDb.Event.LOST, current, ts = start + 15 * 3_600_000L)
-        StatsDb.event(StatsDb.Event.FAILOVER, all[1].id, current, ts = start + 15 * 3_600_000L + 9 * 60_000L)
+        StatsDb.event(StatsDb.Event.FAILOVER, all[1].id, current, ts = start + 15 * 3_600_000L + 9 * 60_000L, pos = 4 to all.size)
         StatsDb.event(StatsDb.Event.OPTIMIZE, current, all[1].id, ts = start + 18 * 3_600_000L)
         while (t < now) {
             val evening = ((t - start) / 3_600_000L) in 14..15

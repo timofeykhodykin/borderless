@@ -42,16 +42,18 @@ object ViaServer {
 
     /**
      * Servers worth trying, best first: the one in use now, then the ones that answered recently
-     * (fastest first). At most [limit].
+     * (fastest first); with [prefer] (a subscription id) that subscription's good servers before all. At most [limit].
      */
-    fun candidates(limit: Int = 3): List<Server> {
+    fun candidates(limit: Int = 3, prefer: String? = null): List<Server> {
         val pings = Repo.pings.value
         val now = System.currentTimeMillis()
         val current = TunnelState.status.value.takeIf { it.phase == Phase.CONNECTED }?.serverId?.let(Repo::server)
         val good = Repo.activeServers
             .mapNotNull { s -> pings[s.id]?.takeIf { it.ok && now - it.lastOkAt < 6 * 3_600_000L }?.let { s to it.ms!! } }
             .sortedBy { it.second }.map { it.first }
-        return (listOfNotNull(current) + good).distinctBy { it.id }.take(limit)
+        // A subscription's own servers first: its provider already knows the phone fetches it (SECURITY.md S10).
+        val own = good.filter { prefer != null && it.subscriptionId == prefer }
+        return (own + listOfNotNull(current) + good).distinctBy { it.id }.take(limit)
     }
 
     /** Runs [use] with a [Proxy] through [server] (its credentials are answered by the default Authenticator). */
@@ -72,11 +74,39 @@ object ViaServer {
         credentials[port] = PasswordAuthentication(user, pass.toCharArray())
         AppLog.debug(TAG, "local proxy through ${server.name} on 127.0.0.1:$port")
         try {
+            // The port was free a moment ago; make sure it is our instance that took it, not another app.
+            if (!ours(port, user, pass)) throw java.io.IOException("local port $port is not our proxy")
             use(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port)))
         } finally {
             credentials.remove(port)
             runCatching { controller.stopLoop() }
         }
+    }
+
+    /**
+     * Whether 127.0.0.1:[port] is our instance (SECURITY.md S17): it refuses a wrong password and accepts ours, asked
+     * in a random order — a stranger that took the port can't pass both without knowing the password.
+     */
+    private fun ours(port: Int, user: String, pass: String): Boolean {
+        fun accepts(p: String): Boolean = runCatching {
+            java.net.Socket().use { sock ->
+                sock.connect(InetSocketAddress("127.0.0.1", port), 2_000)
+                sock.soTimeout = 2_000
+                val out = sock.getOutputStream()
+                val input = sock.getInputStream()
+                out.write(byteArrayOf(5, 1, 2)) // SOCKS5, one method: user name / password
+                out.flush()
+                if (input.read() != 5 || input.read() != 2) return@use false
+                val u = user.toByteArray()
+                val pw = p.toByteArray()
+                out.write(byteArrayOf(1, u.size.toByte()) + u + byteArrayOf(pw.size.toByte()) + pw)
+                out.flush()
+                input.read() == 1 && input.read() == 0
+            }
+        }.getOrDefault(false)
+        val right = { accepts(pass) }
+        val wrong = { !accepts(token()) }
+        return if (SecureRandom().nextBoolean()) right() && wrong() else wrong() && right()
     }
 
     private fun token(): String {

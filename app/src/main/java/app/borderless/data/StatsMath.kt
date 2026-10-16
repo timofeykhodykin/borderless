@@ -11,17 +11,19 @@ object StatsMath {
     data class Segment(val start: Long, val end: Long, val phase: Phase, val server: String?)
 
     /**
-     * Turns phase rows into time segments clipped to [from, to). A row lasts until the next row,
-     * but at most [StatsDb.HEARTBEAT_MS] × 1.5: rows are re-written every heartbeat while the tunnel
-     * runs, so a longer silence means the process was gone and that time is not counted.
+     * Turns phase rows into time segments clipped to [from, to). A row lasts until the next row. Rows are
+     * re-written every heartbeat while the tunnel runs; if the next row comes from another process (or there is
+     * none), a silence longer than [StatsDb.HEARTBEAT_MS] × 1.5 means the process was gone and is not counted.
+     * Within one process a long silence is deep sleep (heartbeats come late) and counts in full.
      */
     fun segments(rows: List<StatsDb.PhaseRow>, from: Long, to: Long, now: Long): List<Segment> {
         val cap = StatsDb.HEARTBEAT_MS * 3 / 2
         val out = ArrayList<Segment>()
         rows.forEachIndexed { i, r ->
             if (r.phase == Phase.OFF) return@forEachIndexed
-            val next = rows.getOrNull(i + 1)?.ts ?: now
-            val end = minOf(next, r.ts + cap, to)
+            val nextRow = rows.getOrNull(i + 1)
+            val next = nextRow?.ts ?: now
+            val end = minOf(next, if (nextRow != null && sameProcess(r, nextRow)) next else r.ts + cap, to)
             val start = maxOf(r.ts, from)
             if (end > start) {
                 val last = out.lastOrNull()
@@ -32,6 +34,14 @@ object StatsMath {
         }
         return out
     }
+
+    /**
+     * Whether [b] was written by the process that wrote [a]. Rows before v3 carry no process: a repeat of the same
+     * state is then taken as a heartbeat of the same process (a new process always starts with "searching").
+     */
+    private fun sameProcess(a: StatsDb.PhaseRow, b: StatsDb.PhaseRow): Boolean =
+        if (a.run != null && b.run != null) a.run == b.run
+        else a.run == null && b.run == null && a.phase != Phase.SEARCHING && a.phase == b.phase && a.server == b.server
 
     fun durations(segments: List<Segment>): Map<Phase, Long> =
         segments.groupBy { it.phase }.mapValues { (_, s) -> s.sumOf { it.end - it.start } }

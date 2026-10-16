@@ -427,20 +427,29 @@ internal fun TileGrid(tiles: List<Triple<String, String, String?>>) {
 private fun SummaryTiles(context: Context, d: Overview, period: Period) {
     val on = d.onTime
     val connected = d.durations[Phase.CONNECTED] ?: 0
-    val without = (d.durations[Phase.DIRECT] ?: 0) + (d.durations[Phase.PAUSED] ?: 0)
+    val without = (d.durations[Phase.DIRECT] ?: 0) + (d.durations[Phase.PAUSED] ?: 0) + (d.durations[Phase.LIMITED] ?: 0)
     val lost = d.events.count { it.type == StatsDb.Event.LOST }
     val failover = d.events.count { it.type == StatsDb.Event.FAILOVER }
     val faster = d.events.count { it.type == StatsDb.Event.OPTIMIZE || it.type == StatsDb.Event.BEST }
     val manual = d.events.count { it.type == StatsDb.Event.MANUAL }
     val avail = d.scans.takeIf { it.isNotEmpty() }
+    // Connections made after a check of servers: where the chosen one stood in the check order.
+    val found = d.events.filter { it.pos != null && (it.type == StatsDb.Event.INITIAL || it.type == StatsDb.Event.FAILOVER || it.type == StatsDb.Event.RETRY) }
     fun pct(part: Long, whole: Long) = if (whole <= 0) "—" else "${part * 100 / whole}%"
     val periodText = if (period == Period.ALL) stringResource(R.string.st_since, SimpleDateFormat("d MMM yyyy", app.borderless.Res.locale).format(Date(d.from)))
     else stringResource(R.string.st_of, formatDuration(context, d.to - d.from))
     TileGrid(
         listOf(
             Triple(stringResource(R.string.st_on_time), formatDuration(context, on), periodText),
-            Triple(stringResource(R.string.st_via_server), pct(connected, on), formatDuration(context, connected)),
-            Triple(stringResource(R.string.st_without), formatDuration(context, without), pct(without, on)),
+            // Via a server and without one in one tile (they add up); the other slot shows how far down the
+            // check order a working server usually is.
+            Triple(stringResource(R.string.st_via_server), pct(connected, on), stringResource(R.string.st_via_server_sub, formatDuration(context, connected), formatDuration(context, without))),
+            Triple(
+                stringResource(R.string.st_found),
+                if (found.isEmpty()) "—" else String.format(app.borderless.Res.locale, "%.1f", found.map { it.pos!! }.average()),
+                if (found.isEmpty()) stringResource(R.string.st_found_none)
+                else androidx.compose.ui.res.pluralStringResource(R.plurals.st_found_sub, found.size, found.size, found.map { it.posOf ?: 0 }.average().roundToInt()),
+            ),
             Triple(
                 stringResource(R.string.st_failures), app.borderless.data.Units.count(lost.toLong()),
                 if (lost == 0) stringResource(R.string.st_fail_none) else stringResource(R.string.st_fail_every, formatDuration(context, on / lost)),
@@ -468,7 +477,7 @@ private fun SummaryTiles(context: Context, d: Overview, period: Period) {
 private fun PhaseLegend(context: Context, durations: Map<Phase, Long>) {
     val names = mapOf(
         Phase.CONNECTED to R.string.ph_connected, Phase.SEARCHING to R.string.ph_searching, Phase.DIRECT to R.string.ph_direct,
-        Phase.PAUSED to R.string.ph_paused, Phase.NO_NETWORK to R.string.ph_no_network,
+        Phase.PAUSED to R.string.ph_paused, Phase.NO_NETWORK to R.string.ph_no_network, Phase.LIMITED to R.string.ph_limited,
     )
     FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         names.forEach { (phase, label) ->
@@ -539,7 +548,7 @@ private fun PingCard(
 ) {
     // The best line first, then the selected servers; the same list for any time window.
     suspend fun load(from: Long, to: Long, buckets: Int): List<Series> = buildList {
-        add(Series(d.bestLabel, Palette.textMuted, d.best(from, to, buckets)))
+        add(Series(d.bestLabel, Palette.textMuted, d.best(from, to, buckets), halo = true))
         selected.forEach { id ->
             val s = byId[id] ?: return@forEach
             add(Series(shortName(Repo.displayName(s), 18), colorOf.getValue(id), StatsDb.buckets(from, to, buckets, id)))
@@ -792,7 +801,7 @@ fun ServerStatsScreen(serverId: String, onBack: () -> Unit) {
                         Triple(stringResource(R.string.ss_minmax), if (s.min == null || s.max == null) "—" else "${s.min} / ${stringResource(R.string.ms, s.max)}", null),
                         Triple(stringResource(R.string.ss_jitter), msText(context, s.jitter), null),
                         Triple(stringResource(R.string.ss_usage), if (d.usage == 0L) "—" else formatDuration(context, d.usage), null),
-                        Triple(stringResource(R.string.ss_chosen), stringResource(R.string.ss_chosen_value, d.chosen), null),
+                        Triple(stringResource(R.string.ss_chosen), androidx.compose.ui.res.pluralStringResource(R.plurals.ss_chosen_value, d.chosen, d.chosen), null),
                     )
                 )
             }

@@ -20,6 +20,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.serialization.json.Json
+import app.borderless.BuildConfig
 
 /**
  * Two logs:
@@ -36,6 +37,7 @@ object AppLog {
     private const val MAX_EVENTS = 400
     private const val MAX_DEBUG = 3000
     private const val MAX_FILE = 2_000_000L
+    private const val MAX_BATCH = 200
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, e -> Log.w("AppLog", "log write failed", e) })
     private val writes = Channel<Pair<File, String>>(Channel.UNLIMITED)
@@ -65,8 +67,14 @@ object AppLog {
         _events.value = readLines(File(d, "events.log")).takeLast(MAX_EVENTS).mapNotNull(::parseEvent)
         _debug.value = readLines(File(d, "debug.log")).takeLast(MAX_DEBUG)
         scope.launch {
-            for ((file, line) in writes) {
-                runCatching {
+            for (first in writes) {
+                // Whatever queued up meanwhile goes out with it: one append per file instead of one per line
+                // (a burst of core output or a scan's probe lines is a single write).
+                val batch = ArrayList<Pair<File, String>>().apply { add(first) }
+                while (batch.size < MAX_BATCH) batch += writes.tryReceive().getOrNull() ?: break
+                // The logs are sealed like the data: while the key is unavailable nothing is written in the clear.
+                if (Crypto.locked) continue
+                for ((file, lines) in batch.groupBy({ it.first }, { it.second })) runCatching {
                     if (file.length() > MAX_FILE) {
                         val old = File(file.path + ".1")
                         old.delete()
@@ -74,13 +82,23 @@ object AppLog {
                     }
                     // Each line is encrypted on its own (see Crypto), so the log can still be appended to.
                     Energy.track(Activity.Kind.LOG_WRITE) {
-                        val stored = Crypto.key?.let { Seal.sealLine(it, line, file.name) } ?: line
-                        file.appendText(stored + "\n")
+                        val key = Crypto.key
+                        file.appendText(lines.joinToString("") { line -> (key?.let { k -> Seal.sealLine(k, line, file.name) } ?: line) + "\n" })
                     }
                 }
             }
         }
     }
+
+    /** Appends [line] to [file] in the logs folder (encrypted like the logs): for [Errors]' own file. */
+    internal fun append(file: File, line: String) {
+        writes.trySend(file to line)
+    }
+
+    /** The decrypted lines of a file written by [append] (with its rotated part). */
+    internal fun read(file: File): List<String> = readLines(File(file.path + ".1"), file.name) + readLines(file)
+
+    val folder: File? get() = dir
 
     /** A user-facing event. Also mirrored into the detailed log. */
     /** A user-facing event, stored language-neutral; the detailed log gets it as written now. */
@@ -93,15 +111,18 @@ object AppLog {
 
     fun debug(tag: String, text: String, error: Throwable? = null) {
         val msg = if (error != null) "$text: ${error.javaClass.simpleName}: ${error.message}" else text
-        Log.d("borderless/$tag", msg)
+        // Logcat is a plain-text system log: only debug builds copy lines there.
+        if (BuildConfig.DEBUG) Log.d("borderless/$tag", msg)
         appendDebug("${timeFmt.get()!!.format(Date())} [$tag] $msg")
     }
 
+    /** Deletes both logs and the errors kept for reporting ([Errors.clear]). */
     fun clear() {
         _events.value = emptyList()
         _debug.value = emptyList()
+        Errors.clear()
         scope.launch {
-            listOfNotNull(eventsFile, debugFile).forEach { it.delete(); File(it.path + ".1").delete() }
+            listOfNotNull(eventsFile, debugFile, Errors.file).forEach { it.delete(); File(it.path + ".1").delete() }
         }
     }
 

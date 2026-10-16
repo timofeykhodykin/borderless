@@ -22,6 +22,12 @@ enum class Phase {
 
     /** The phone has no network at all. */
     NO_NETWORK,
+
+    /**
+     * The network reaches only the chosen domain zones' own sites ([NetCheck]), no server answers: traffic goes
+     * around the proxy (or is paused, [TunnelStatus.paused]), servers are checked less often.
+     */
+    LIMITED,
 }
 
 data class TunnelStatus(
@@ -33,6 +39,10 @@ data class TunnelStatus(
     val error: String? = null,
     /** There is no server to use at all: traffic goes direct until one is added (no retries meanwhile). */
     val noServers: Boolean = false,
+    /** Without a server, traffic is paused rather than going direct (shown with [Phase.LIMITED]). */
+    val paused: Boolean = false,
+    /** CONNECTED under the Manual strategy to a server that stopped answering (the engine stays on it). */
+    val unanswered: Boolean = false,
 ) {
     val active: Boolean get() = phase != Phase.OFF
 }

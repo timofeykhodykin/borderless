@@ -138,14 +138,14 @@ class MainActivity : ComponentActivity() {
                             onBack = { back(); settingsPage = null },
                             onApps = { open("apps") },
                             onLog = { open("log") },
+                            onZone = { open("zone:$it") },
                         )
+                        "zone" -> app.borderless.ui.settings.ZoneScreen(arg, onBack = ::back)
                         "log" -> LogScreen(onBack = ::back)
+                        "countries" -> app.borderless.ui.main.CountryScreen(onBack = ::back)
                         "apps" -> AppsScreen(onBack = ::back)
                         else -> {
-                        val visible by Repo.visible.collectAsStateWithLifecycle()
-                        // Servers the last scan stopped waiting for, with no result yet, stay out of sight.
-                        val skipped by Scanner.skipped.collectAsStateWithLifecycle()
-                        val servers = remember(visible, skipped) { if (skipped.isEmpty()) visible else visible.filter { it.id !in skipped } }
+                        val servers by Repo.visible.collectAsStateWithLifecycle()
                         val allServers by Repo.servers.collectAsStateWithLifecycle()
                         val pings by Repo.pings.collectAsStateWithLifecycle()
                         val groups by Repo.groups.collectAsStateWithLifecycle()
@@ -159,7 +159,7 @@ class MainActivity : ComponentActivity() {
                         val ecoEstimate by app.borderless.core.Eco.estimate.collectAsStateWithLifecycle()
                         MainScreen(
                             MainState(servers, groups, pings, subs, status, settings.routingEnabled, settings.strategy, scan, pending,
-                                probing, plan.takeIf { settings.autoSort }, settings.ecoOn, ecoEstimate?.percent),
+                                probing, plan.takeIf { settings.autoSort }, settings.ecoOn, ecoEstimate?.percent, settings.countries),
                             MainActions(
                                 onToggle = ::toggle,
                                 onServerClick = ::connectTo,
@@ -169,13 +169,24 @@ class MainActivity : ComponentActivity() {
                                     TunnelService.reconfigure()
                                 },
                                 onStrategy = { v -> Repo.updateSettings { it.copy(strategy = v) } },
-                                onPingAll = { Scanner.start() },
+                                onPingAll = {
+                                    // With the connection on (and an automatic strategy) the engine checks and, by
+                                    // default, moves to the best server: that is what the button is pressed for.
+                                    val s = Repo.settings.value
+                                    val engine = TunnelState.status.value.active && s.strategy != Strategy.MANUAL &&
+                                        TunnelService.send(Engine.Event.PingAll(s.pingAllSwitches))
+                                    // No engine to ask (the demo build shows a connection without one): a plain scan.
+                                    if (!engine) Scanner.start()
+                                },
                                 onSettings = { settingsPage = null; open("settings") },
                                 onGroups = { open("groups") },
                                 onStats = { open("stats") },
                                 onAdd = { adding = true },
                                 onEco = { app.borderless.core.Eco.toggle() },
                                 onEcoSettings = { settingsPage = SettingsPage.ECO; open("settings") },
+                                onRoutingSettings = { settingsPage = SettingsPage.ROUTING; open("settings") },
+                                onServerSettings = { settingsPage = SettingsPage.SERVER; open("settings") },
+                                onCountries = { open("countries") },
                             ),
                         )
                         if (adding || incoming != null) {
@@ -221,6 +232,7 @@ class MainActivity : ComponentActivity() {
                 Importer.updateDue()
                 Importer.resolveCountries()
                 app.borderless.core.GeoLists.updateIfDue()
+                app.borderless.core.Updater.checkIfDue()
             }
         }
         // Opening the app refreshes the map unless it is fresh enough: with the tunnel on the engine keeps

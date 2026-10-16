@@ -43,14 +43,24 @@ object XrayConfig {
     /** Direct resolvers when neither the user nor a chosen region names one. */
     private val PUBLIC_DNS = listOf("1.1.1.1", "8.8.8.8")
 
+    /** What geoip:private holds, for the time before the lists are downloaded. */
+    private val PRIVATE_IPS = listOf(
+        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24",
+        "192.0.2.0/24", "192.88.99.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
+        "224.0.0.0/4", "240.0.0.0/4", "255.255.255.255/32", "::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8",
+    )
+
     enum class Mode { PROXY, DIRECT, PAUSE }
 
     /** [logLevel] "info" logs every routing decision (`[tun >> direct]`), useful in debug builds. */
     fun build(mode: Mode, proxyOutbounds: List<JsonObject>, s: AppSettings, logLevel: String = "warning", accessLog: String? = null): String {
         val routing = s.routingEnabled
         val region = RegionRules(s)
-        // Direct resolvers are reached directly (their addresses get a rule of their own).
-        val directDnsIps = region.dns.mapNotNull(::hostOf)
+        // The DNS module's own queries: to the remote resolver through the server, to the direct resolvers directly.
+        // Bound to the module (never to the TUN): apps' own traffic to those addresses follows the usual rules, and
+        // an address that is both remote and direct counts as remote (all of DNS went around the server before).
+        val remoteDnsIp = hostOf(s.remoteDns)
+        val directDnsIps = region.dns.mapNotNull(::hostOf).filter { it != remoteDnsIp }
         val config = buildJsonObject {
             putJsonObject("log") {
                 put("loglevel", logLevel)
@@ -99,13 +109,17 @@ object XrayConfig {
                         rule(inbound = TUN, network = "tcp,udp", out = "drop")
                         return@putJsonArray
                     }
-                    if (directDnsIps.isNotEmpty()) rule(ip = directDnsIps, out = "direct")
+                    if (mode == Mode.PROXY) {
+                        if (remoteDnsIp != null) rule(inbound = DNS_TAG, ip = listOf(remoteDnsIp), out = "proxy")
+                        if (directDnsIps.isNotEmpty()) rule(inbound = DNS_TAG, ip = directDnsIps, out = "direct")
+                    }
                     rule(inbound = DNS_TAG, out = if (mode == Mode.PROXY) "proxy" else "direct")
                     if (mode == Mode.DIRECT) {
                         rule(inbound = TUN, network = "tcp,udp", out = "direct")
                         return@putJsonArray
                     }
-                    rule(inbound = TUN, ip = listOf("geoip:private"), out = "direct")
+                    // Local and reserved addresses never go to a server (also before the lists are downloaded).
+                    rule(inbound = TUN, ip = if (GeoFile.usable("geoip:private")) listOf("geoip:private") else PRIVATE_IPS, out = "direct")
                     if (!routing) return@putJsonArray
 
                     if (s.adFilter && GeoFile.usable("geosite:category-ads-all")) rule(inbound = TUN, domain = listOf("geosite:category-ads-all"), out = "drop")

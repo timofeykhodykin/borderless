@@ -21,15 +21,34 @@ class ProtocolCostTest {
     }
 
     @Test
-    fun measurementsReplaceEstimatesAsTrafficGrows() {
+    fun measurementsReplaceEstimatesAsWindowsGrow() {
         val priors = mapOf("A" to 1.0, "B" to 1.5, "C" to 1.2)
-        // A and B measured with lots of traffic: B is really 3× A on this phone.
-        val measured = mapOf("A" to ProtocolCost.Measured(500L shl 20, 50_000), "B" to ProtocolCost.Measured(500L shl 20, 150_000))
-        val f = ProtocolCost.factors(priors, measured)
+        // A and B measured over the same traffic bands: B really costs 3× A on this phone.
+        val windows = (0 until 100).flatMap { i ->
+            val bytes = (1L shl 20) * (1 + i % 8)
+            listOf(ProtocolCost.Window("A", bytes, 1_000), ProtocolCost.Window("B", bytes, 3_000))
+        }
+        val f = ProtocolCost.factors(priors, windows)
         assertEquals(3.0, f.getValue("B") / f.getValue("A"), 1e-6)
         assertEquals(1.2, f.getValue("C"), 1e-9) // unmeasured: the estimate
-        // Too little traffic: estimates stay.
-        assertEquals(priors, ProtocolCost.factors(priors, mapOf("A" to ProtocolCost.Measured(1L shl 20, 9_000))))
+        // Too few windows: estimates stay.
+        assertEquals(priors, ProtocolCost.factors(priors, windows.take(10)))
+    }
+
+    @Test
+    fun classesAreComparedAtTheSameTraffic() {
+        // CPU depends on the traffic band, not on the class; A happened to carry more bytes per window.
+        // CPU per GB would call B ten times dearer; at the same traffic they cost the same.
+        val windows = (0 until 40).flatMap {
+            listOf(
+                ProtocolCost.Window("A", 100L shl 20, 30_000), ProtocolCost.Window("A", 512L shl 10, 3_000),
+                ProtocolCost.Window("B", 100L shl 20, 30_000), ProtocolCost.Window("B", 512L shl 10, 3_000),
+                ProtocolCost.Window("B", 512L shl 10, 3_000), ProtocolCost.Window("B", 512L shl 10, 3_000),
+            )
+        }
+        val rel = ProtocolCost.relative(windows)
+        assertEquals(1.0, rel.getValue("A").first, 1e-9)
+        assertEquals(1.0, rel.getValue("B").first, 1e-9)
     }
 
     @Test

@@ -214,7 +214,7 @@ private fun SubTiles(context: Context, sub: Subscription, d: SubData) {
                 stringResource(R.string.subst_time),
                 d.usage.values.sum().let { if (it == 0L) "—" else formatDuration(context, it) }, stringResource(R.string.subst_time_sub),
             ),
-            Triple(stringResource(R.string.ss_chosen), stringResource(R.string.ss_chosen_value, d.chosen), null),
+            Triple(stringResource(R.string.ss_chosen), androidx.compose.ui.res.pluralStringResource(R.plurals.ss_chosen_value, d.chosen, d.chosen), null),
             Triple(
                 stringResource(R.string.ss_availability), if (count == 0) "—" else "${ok.toLong() * 100 / count}%",
                 stringResource(R.string.subst_answered, samples.count { it.ok > 0 }, samples.size),

@@ -35,13 +35,21 @@ object SettingsLog {
         "pauseScansScreenOff" to s.pauseScansScreenOff.toString(),
         "probeTimeoutSec" to s.probeTimeoutSec.toString(),
         "concurrency" to s.effectiveConcurrency.toString(),
-        "statusIcon" to s.statusIcon.toString(),
+        "notify" to s.notify.name,
         "measureCurrent" to s.measureCurrent.toString(),
         "verboseLog" to s.verboseLog.toString(),
+        "carefulScans" to s.carefulScans.toString(),
+        "noServerAction" to s.noServerAction.name,
+        "avoidInsecure" to s.avoidInsecure.toString(),
+        "sendDeviceModel" to s.sendDeviceModel.toString(),
+        "confirmShare" to s.confirmShare.toString(),
         "mux" to s.mux.toString(),
         "fragment" to s.fragment.toString(),
         "ipv6" to s.ipv6.toString(),
         "subUpdateHours" to s.subUpdateHours.toString(),
+        "pingAllSwitches" to s.pingAllSwitches.toString(),
+        // Servers of these countries only (codes, "-" = unknown country, comma-separated); empty = any.
+        "country" to s.countries.sorted().joinToString(","),
     )
 
     /** Pure part (unit-tested): what changed between two snapshots. */
@@ -54,7 +62,11 @@ object SettingsLog {
             Repo.settings.collect { s ->
                 val now = snapshot(s)
                 val changed = diff(last, now)
-                if (changed.isNotEmpty()) StatsDb.settings(System.currentTimeMillis(), changed)
+                if (changed.isNotEmpty()) {
+                    StatsDb.settings(System.currentTimeMillis(), changed)
+                    // The detailed log gets them too, so it tells the whole story on its own.
+                    AppLog.debug("settings", (if (last == null) "in effect: " else "changed: ") + changed.entries.joinToString { (k, v) -> "$k=$v" })
+                }
                 last = now
             }
         }

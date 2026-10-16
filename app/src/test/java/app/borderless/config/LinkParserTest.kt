@@ -160,6 +160,39 @@ class LinkParserTest {
         assertEquals("direct", direct["outbounds"]!!.jsonArray.first().jsonObject.str("tag"))
     }
 
+    /**
+     * SECURITY.md S3: no rule may send traffic to a resolver's address around the server unless it is the DNS module's
+     * query to a direct resolver; the remote resolver always goes through the server.
+     */
+    @Test
+    fun dnsRulesStayInTheTunnel() {
+        val outbounds = LinkParser.parse("vless://id@1.2.3.4:443?type=tcp&security=reality&pbk=k#x").outbounds
+        fun rules(s: AppSettings) = Json.parseToJsonElement(XrayConfig.build(XrayConfig.Mode.PROXY, outbounds, s)).jsonObject
+            .obj("routing")["rules"]!!.jsonArray.map { it.jsonObject }
+        fun ips(r: JsonObject) = r["ip"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+        fun inbound(r: JsonObject) = r["inboundTag"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+        val zone = Regions.all.first()
+        val zoneDnsIp = zone.dns.first().substringAfter("://").substringBefore('/').substringBefore(':')
+        val cases = listOf(
+            AppSettings.fresh().copy(regions = emptySet()),
+            AppSettings.fresh().copy(routingEnabled = false),
+            AppSettings.fresh().copy(routingMode = app.borderless.data.RoutingMode.LISTED_ONLY),
+            AppSettings.fresh().copy(directDns = "1.1.1.1"),
+            AppSettings.fresh(),
+        )
+        for (s in cases) {
+            val rs = rules(s)
+            // Every rule that names a resolver's address belongs to the DNS module.
+            for (r in rs) if (ips(r).any { it == "1.1.1.1" || it == "8.8.8.8" || it == zoneDnsIp }) {
+                assertEquals("rule $r of $s", listOf("dns-module"), inbound(r))
+            }
+            // The remote resolver (1.1.1.1 by default) is never sent direct.
+            assertFalse(rs.any { it.str("outboundTag") == "direct" && "1.1.1.1" in ips(it) })
+            // The first rule naming the remote resolver sends it to the server.
+            rs.firstOrNull { "1.1.1.1" in ips(it) }?.let { assertEquals("proxy", it.str("outboundTag")) }
+        }
+    }
+
     @Test
     fun zonesRouting() {
         val outbounds = LinkParser.parse("vless://id@1.2.3.4:443?type=tcp&security=reality&pbk=k#x").outbounds

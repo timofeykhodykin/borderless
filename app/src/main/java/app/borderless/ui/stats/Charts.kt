@@ -66,6 +66,7 @@ import app.borderless.ui.theme.Palette
 import java.text.SimpleDateFormat
 import java.util.Date
 import kotlin.math.abs
+import kotlin.math.ceil
 
 /**
  * Categorical colours for several servers on one chart (validated colour-blind-safe order).
@@ -76,14 +77,18 @@ val SeriesColors = listOf(
     Color(0xFFE87BA4), Color(0xFF008300), Color(0xFF4A3AA7), Color(0xFFE34948),
 )
 
-/** [fillAlpha]: opacity of the area under the line when the chart fills (an envelope can be stronger). */
-data class Series(val label: String, val color: Color, val points: List<StatsMath.Point>, val fillAlpha: Float = 0.12f)
+/**
+ * [fillAlpha]: opacity of the area under the line when the chart fills (an envelope can be stronger).
+ * [halo]: a wide pale band under the line, so it stays visible where other lines run over it (the best ping).
+ */
+data class Series(val label: String, val color: Color, val points: List<StatsMath.Point>, val fillAlpha: Float = 0.12f, val halo: Boolean = false)
 
 /** Periods shaded behind a chart: when the tunnel was not carrying traffic through a server. */
 enum class BandKind(val label: Int) {
     OFF(R.string.band_off),
     DIRECT(R.string.band_direct),
     NO_NETWORK(R.string.band_no_network),
+    LIMITED(R.string.band_limited),
     CHARGING(R.string.band_charging),
     SCREEN_OFF(R.string.band_screen_off),
     /** The phone's battery saver: a strip along the top (it often overlaps the app's own mode). */
@@ -102,6 +107,7 @@ enum class BandKind(val label: Int) {
             OFF -> Color(0xFFE7DFDB)
             DIRECT -> Palette.warning.copy(alpha = 0.45f)
             NO_NETWORK -> Color(0xFFDDE3EC)
+            LIMITED -> Color(0xFFF1D2BF)
             CHARGING -> Color(0xFFDCEFD8)
             SCREEN_OFF -> Color(0xFFE4E0EC)
             SAVER -> Color(0xFFF2B866)
@@ -133,7 +139,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.hatch(color: Color,
 
 /**
  * Bands from connection state segments: gaps between segments are "off", direct/paused segments are
- * "without a server", no-network segments are "no network". Connected and searching stay clear.
+ * "without a server", no-network segments are "no network", limited-network ones "limited network".
+ * Connected and searching stay clear.
  */
 fun bands(segments: List<StatsMath.Segment>, from: Long, to: Long): List<Band> {
     val out = ArrayList<Band>()
@@ -149,6 +156,7 @@ fun bands(segments: List<StatsMath.Segment>, from: Long, to: Long): List<Band> {
         when (s.phase) {
             Phase.DIRECT, Phase.PAUSED -> add(s.start, s.end, BandKind.DIRECT)
             Phase.NO_NETWORK -> add(s.start, s.end, BandKind.NO_NETWORK)
+            Phase.LIMITED -> add(s.start, s.end, BandKind.LIMITED)
             else -> {}
         }
         cursor = maxOf(cursor, s.end)
@@ -475,6 +483,9 @@ fun TimeChart(
                     }
                     if (b.kind.hatch) hatch(b.kind.fill, x0, 0f, x1, plotH, 7.dp.toPx(), 1.2.dp.toPx())
                     else drawRect(b.kind.fill, Offset(x0, 0f), Size(x1 - x0, plotH))
+                    // Narrow bands (a week of short screen-off spells) get no edges: a forest of dashes would hide the
+                    // data. Zooming in widens them and the edges come back.
+                    if (x1 - x0 < BAND_EDGE_DP.dp.toPx()) return@forEach
                     if (b.start > ft0) drawLine(Palette.textMuted, Offset(x0, 0f), Offset(x0, plotH), 1.dp.toPx(), pathEffect = dash)
                     if (b.end < ft1) drawLine(Palette.textMuted, Offset(x1, 0f), Offset(x1, plotH), 1.dp.toPx(), pathEffect = dash)
                 }
@@ -482,9 +493,28 @@ fun TimeChart(
                 markers.forEach { m ->
                     if (!m.edge && m.line && m.t > ft0 && m.t < ft1) drawLine(Palette.textMuted, Offset(x(m.t), 0f), Offset(x(m.t), plotH), 1.dp.toPx())
                 }
-                val bucketWidth = shown.firstOrNull()?.points?.zipWithNext { a, b -> b.t - a.t }?.minOrNull() ?: 0L
-                val visiblePoints = shown.firstOrNull()?.points?.count { it.t in ft0..ft1 } ?: 0
-                shown.forEach { s -> drawSeries(s, ::x, ::y, plotH, bucketWidth, fill, stepped, dots = visiblePoints <= 24, connectGapMs) }
+                val bucketWidth = shown.mapNotNull { s -> s.points.zipWithNext { a, b -> b.t - a.t }.minOrNull() }.minOrNull() ?: 0L
+                // Gaps that are narrow on screen aren't worth breaking a line for: sparse data (scans an hour apart in
+                // battery saving, pings minutes apart) stays one line, and buckets wider than connectGapMs (a week's
+                // view) join their neighbours. Zooming in narrows the joins again.
+                val msPerDp = (t1 - t0) / (plotW / density)
+                val joinMs = if (connectGapMs != null) maxOf(connectGapMs, bucketWidth * 3 / 2, (msPerDp * JOIN_DP).toLong()) else bucketWidth * 3
+                // A step's last value (before a gap, or a lone scan) still gets a short bar instead of nothing.
+                val stepTailMs = (msPerDp * STEP_TAIL_DP).toLong()
+                shown.forEach { s ->
+                    // Points packed tighter than the eye can follow: a line through the medians of runs of points
+                    // (about TREND_POINTS across the width) over a faint measured one. Zooming in spreads the points:
+                    // the median line fades out and the measured one takes over, with dots once they stand apart.
+                    // Judged per series by the typical distance between neighbouring points on screen, so a sparse
+                    // line next to a dense one keeps its real points, and data covering only part of the period
+                    // (a fresh install's "30 days") isn't taken for sparse.
+                    val inView = s.points.filter { it.ms != null && it.t in ft0..ft1 }
+                    val visible = inView.size
+                    val spacingDp = inView.zipWithNext { p, q -> x(q.t) - x(p.t) }.sorted().let { if (it.isEmpty()) plotW else it[it.size / 2] } / density
+                    val dense = if (stepped) 0f else ((SPARSE_DP - spacingDp) / (SPARSE_DP - DENSE_DP)).coerceIn(0f, 1f)
+                    val trend = if (dense > 0f) ceil(visible / TREND_POINTS.toDouble()).toInt().coerceAtLeast(2) else 1
+                    drawSeries(s, ::x, ::y, plotH, joinMs, stepTailMs, fill, stepped, dots = spacingDp >= DOTS_DP, trend, dense)
+                }
             }
 
             if (failures) {
@@ -542,6 +572,30 @@ fun TimeChart(
     }
 }
 
+/**
+ * Points closer than this (dp apart) are drawn as a trend over the measured line (see drawSeries)... A full chart
+ * of [BUCKETS] stays above it: its line is readable as measured.
+ */
+private const val DENSE_DP = 1.5f
+
+/** ...points further apart as the measured line alone; in between one fades into the other. */
+private const val SPARSE_DP = 2.5f
+
+/** Points up to this far apart on screen (dp) are joined by the line (with connectGapMs). */
+private const val JOIN_DP = 20f
+
+/** Bands narrower than this on screen (dp) are drawn without their dashed edges. */
+private const val BAND_EDGE_DP = 8f
+
+/** Width of a step chart's value before a gap. */
+private const val STEP_TAIL_DP = 4f
+
+/** Points this far apart (dp) get dots. */
+private const val DOTS_DP = 14f
+
+/** About this many trend points across the chart's width. */
+private const val TREND_POINTS = 40
+
 /** Narrowest time window a pinch can reach. */
 private const val MIN_TIME_SPAN = 5 * 60_000.0
 
@@ -556,19 +610,24 @@ private fun DrawScope.drawSeries(
     x: (Long) -> Float,
     y: (Double) -> Float,
     plotH: Float,
-    bucketWidth: Long,
+    /** Points further apart than this start a new piece of line. */
+    joinMs: Long,
+    /** Stepped: how far the last value of a piece reaches. */
+    stepTailMs: Long,
     fill: Boolean,
     stepped: Boolean,
     dots: Boolean,
-    connectGapMs: Long?,
+    /** > 1: a line through the medians of every [trend] points, drawn over the measured one... */
+    trend: Int = 1,
+    /** ...with this weight (0 = measured line only, 1 = measured line faint, median line bold). */
+    dense: Float = 0f,
 ) {
-    // Break the line across failed buckets and across gaps: longer than connectGapMs, or (without it)
-    // much longer than one bucket.
+    // Break the line across failed buckets and across gaps.
     val segments = mutableListOf<MutableList<StatsMath.Point>>()
     var prev: StatsMath.Point? = null
     s.points.forEach { p ->
         val q = prev
-        val gap = q != null && if (connectGapMs != null) p.t - q.t > connectGapMs else bucketWidth > 0 && p.t - q.t > bucketWidth * 3
+        val gap = q != null && p.t - q.t > joinMs
         if (p.ms == null || gap || segments.isEmpty()) segments.add(mutableListOf())
         if (p.ms != null) segments.last().add(p)
         prev = p
@@ -584,17 +643,35 @@ private fun DrawScope.drawSeries(
                 path.lineTo(px, py)
             }
         }
-        if (fill && seg.size > 1) {
+        val end = if (stepped) x(seg.last().t + stepTailMs) else x(seg.last().t)
+        if (stepped) path.lineTo(end, y(seg.last().ms!!.toDouble()))
+        if (fill && (seg.size > 1 || stepped)) {
             val area = Path().apply {
                 addPath(path)
-                lineTo(x(seg.last().t), plotH)
+                lineTo(end, plotH)
                 lineTo(x(seg.first().t), plotH)
                 close()
             }
             drawPath(area, s.color.copy(alpha = s.fillAlpha))
         }
-        drawPath(path, s.color, style = Stroke(2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-        if (seg.size == 1 || dots) seg.forEach { p ->
+        if (s.halo) drawPath(path, s.color.copy(alpha = 0.3f), style = Stroke(7.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+        val measuredAlpha = 1f - 0.7f * dense
+        drawPath(path, s.color.copy(alpha = measuredAlpha), style = Stroke((2f - 0.8f * dense).dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+        if (trend > 1 && dense > 0f) {
+            val medians = seg.chunked(trend).map { run ->
+                val ms = run.map { it.ms!! }.sorted()
+                run[run.size / 2].t to (if (ms.size % 2 == 1) ms[ms.size / 2].toDouble() else (ms[ms.size / 2 - 1] + ms[ms.size / 2]) / 2.0)
+            }
+            if (medians.size == 1) {
+                drawCircle(s.color.copy(alpha = dense), 2.5.dp.toPx(), Offset(x(medians[0].first), y(medians[0].second)))
+            } else {
+                val line = Path()
+                medians.forEachIndexed { i, (t, v) -> if (i == 0) line.moveTo(x(t), y(v)) else line.lineTo(x(t), y(v)) }
+                drawPath(line, s.color.copy(alpha = dense), style = Stroke(2.2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+            }
+            return@forEach
+        }
+        if ((seg.size == 1 && !stepped) || dots) seg.forEach { p ->
             drawCircle(Palette.background, 4.dp.toPx(), Offset(x(p.t), y(p.ms!!.toDouble())))
             drawCircle(s.color, 3.dp.toPx(), Offset(x(p.t), y(p.ms.toDouble())))
         }
@@ -607,6 +684,7 @@ fun phaseColor(p: Phase): Color = when (p) {
     Phase.DIRECT -> Palette.warning
     Phase.PAUSED -> Palette.danger
     Phase.NO_NETWORK -> Palette.textMuted
+    Phase.LIMITED -> Color(0xFFE2A983)
     Phase.OFF -> Palette.card
 }
 

@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -18,8 +19,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import java.net.HttpURLConnection
-import java.net.Inet4Address
-import java.net.InetAddress
 import java.net.URL
 import java.util.UUID
 
@@ -96,7 +95,7 @@ object Importer {
             // Into an existing group: keep that group's name; a new group is named after the subscription.
             groupId?.let(Repo::freezeGroupName)
             val target = groupId ?: Repo.createSubscriptionGroup().id
-            val sub = Subscription(id = UUID.randomUUID().toString().take(8), name = URL(url).host, url = url, groupId = target)
+            val sub = Subscription(id = UUID.randomUUID().toString().take(8), name = URL(url).host, url = url, groupId = target, hwid = Repo.deviceIdFor(url))
             Repo.upsertSubscription(sub)
             val r = update(sub)
             subCount++
@@ -140,7 +139,7 @@ object Importer {
                 target?.let(Repo::freezeGroupName)
                 val sub = Subscription(
                     id = UUID.randomUUID().toString().take(8), name = s.name ?: URL(s.url).host, url = s.url,
-                    groupId = target ?: Repo.createSubscriptionGroup().id,
+                    groupId = target ?: Repo.createSubscriptionGroup().id, hwid = Repo.deviceIdFor(s.url),
                 )
                 Repo.upsertSubscription(sub)
                 val r = update(sub)
@@ -159,20 +158,24 @@ object Importer {
 
     /**
      * Downloads [url] directly, or through a local proxy ([proxy], see [ViaServer]).
-     * Besides the user agent, sends this install's device id and model the way subscription panels with a
-     * device limit expect (`x-hwid`, `x-device-os`, `x-ver-os`, `x-device-model`).
+     * Besides the user agent, sends the subscription's device id ([Subscription.hwid]) the way subscription panels
+     * with a device limit expect (`x-hwid`); the phone's model and Android version (`x-device-os`, `x-ver-os`,
+     * `x-device-model`) only if the user allows it ([AppSettings.sendDeviceModel]).
      */
-    private fun fetch(url: String, proxy: java.net.Proxy?, userAgent: String): Fetched {
+    private fun fetch(sub: Subscription, proxy: java.net.Proxy?, userAgent: String): Fetched {
+        val url = sub.url
         val conn = ((if (proxy != null) URL(url).openConnection(proxy) else URL(url).openConnection()) as HttpURLConnection).apply {
             connectTimeout = if (proxy != null) 15_000 else 8_000
             readTimeout = 20_000
             instanceFollowRedirects = true
             setRequestProperty("User-Agent", userAgent)
             setRequestProperty("Accept", "*/*")
-            setRequestProperty("x-hwid", Repo.deviceId())
-            setRequestProperty("x-device-os", "Android")
-            setRequestProperty("x-ver-os", android.os.Build.VERSION.RELEASE)
-            setRequestProperty("x-device-model", android.os.Build.MODEL)
+            setRequestProperty("x-hwid", sub.hwid.ifEmpty { Repo.deviceId() })
+            if (Repo.settings.value.sendDeviceModel) {
+                setRequestProperty("x-device-os", "Android")
+                setRequestProperty("x-ver-os", android.os.Build.VERSION.RELEASE)
+                setRequestProperty("x-device-model", android.os.Build.MODEL)
+            }
         }
         try {
             val code = conn.responseCode
@@ -190,11 +193,12 @@ object Importer {
     }
 
     /** Through the user's servers, best first (see [ViaServer.candidates]). */
-    private suspend fun fetchViaServer(url: String, userAgent: String): Fetched {
+    private suspend fun fetchViaServer(sub: Subscription, userAgent: String): Fetched {
+        val url = sub.url
         var last: Exception? = null
-        for (server in ViaServer.candidates()) {
+        for (server in ViaServer.candidates(prefer = sub.id)) {
             try {
-                return ViaServer.withProxy(server) { proxy -> fetch(url, proxy, userAgent) }.also {
+                return ViaServer.withProxy(server) { proxy -> fetch(sub, proxy, userAgent) }.also {
                     AppLog.debug(TAG, "${safeUrl(url)}: downloaded through ${server.name}")
                 }
             } catch (e: Exception) {
@@ -212,10 +216,10 @@ object Importer {
      * Returns the download and whether it went through a server.
      */
     private suspend fun download(sub: Subscription, userAgent: String): Pair<Fetched, Boolean> {
-        suspend fun direct() = withContext(Dispatchers.IO) { fetch(sub.url, null, userAgent) }
+        suspend fun direct() = withContext(Dispatchers.IO) { fetch(sub, null, userAgent) }
         if (sub.viaServer) {
             try {
-                return fetchViaServer(sub.url, userAgent) to true
+                return fetchViaServer(sub, userAgent) to true
             } catch (e: Exception) {
                 AppLog.debug(TAG, "${safeUrl(sub.url)}: through servers failed (${e.message}), trying directly")
             }
@@ -226,7 +230,7 @@ object Importer {
         } catch (e: Exception) {
             AppLog.debug(TAG, "${safeUrl(sub.url)}: direct download failed (${e.message}), trying through a server")
             try {
-                fetchViaServer(sub.url, userAgent) to true
+                fetchViaServer(sub, userAgent) to true
             } catch (viaError: Exception) {
                 // Report the direct failure: it is the one that tells what is wrong with the subscription.
                 throw e
@@ -244,14 +248,14 @@ object Importer {
             AppLog.debug(TAG, "${safeUrl(sub.url)}: ${got.body.length / 1024} KB in ${(System.currentTimeMillis() - startedAt) / 100 / 10.0} s, " +
                 if (viaServer) "through a server" else "directly")
 
-            var (servers, errors) = Repo.buildServers(LinkParser.extractLinks(got.body), sub.id)
+            var (servers, errors) = Repo.buildServers(LinkParser.extractLinks(got.body).take(MAX_SUB_SERVERS), sub.id)
             // A custom User-Agent may make the panel answer in a format we don't read (Clash, sing-box…):
             // then ask once more as the default client, which gets plain links.
             if (servers.isEmpty() && ua != AppSettings().userAgent) {
                 val kind = ImportErrors.kindOf(got.body)
                 AppLog.debug(TAG, "${safeUrl(sub.url)}: nothing usable for User-Agent \"$ua\" ($kind), retrying with the default one")
                 val retry = download(sub, AppSettings().userAgent)
-                val rebuilt = Repo.buildServers(LinkParser.extractLinks(retry.first.body), sub.id)
+                val rebuilt = Repo.buildServers(LinkParser.extractLinks(retry.first.body).take(MAX_SUB_SERVERS), sub.id)
                 if (rebuilt.first.isNotEmpty()) {
                     got = retry.first; viaServer = retry.second; servers = rebuilt.first; errors = rebuilt.second
                     AppLog.event(LText.of(R.string.ev_sub_default_ua, Repo.subName(sub)), AppLog.Kind.WARN)
@@ -263,9 +267,24 @@ object Importer {
                 throw SubscriptionFormatException(ImportErrors.kindOf(got.body))
             }
             val before = Repo.servers.value.filter { it.subscriptionId == sub.id }.map { it.id }.toSet()
+            val issuesBefore = Repo.servers.value.filter { it.subscriptionId == sub.id }.associate { it.id to Insecurity.of(it) }
             Repo.replaceSubscriptionServers(sub.id, servers)
+            // A provider can lower a known server's protection with any refresh: said, never silent (SECURITY.md S7).
+            Repo.servers.value.filter { it.subscriptionId == sub.id }.forEach { s ->
+                val was = issuesBefore[s.id] ?: return@forEach
+                val now = Insecurity.of(s) - was
+                if (now.isNotEmpty()) AppLog.event(
+                    LText.of(
+                        R.string.ev_less_secure, Repo.displayName(s),
+                        LText.of(if (Insecurity.Issue.NO_ENCRYPTION in now) R.string.ins_no_encryption else R.string.ins_no_cert_check),
+                    ),
+                    AppLog.Kind.WARN,
+                )
+            }
             val after = Repo.servers.value.filter { it.subscriptionId == sub.id }.map { it.id }.toSet()
             val added = (after - before).size
+            // New servers get their first result right away instead of showing up blank.
+            app.borderless.core.Scanner.probeNew(after - before)
             val gone = (before - after).size
             Repo.upsertSubscription(
                 (Repo.subscription(sub.id) ?: sub).copy(
@@ -322,6 +341,8 @@ object Importer {
      * check. At most every 5 minutes, so a provider that stays unreachable doesn't cost a download per switch.
      */
     suspend fun pendingAfterConnect() {
+        // Countries wait for a working server to be looked up through (cheap when nothing is missing).
+        resolveCountries()
         val now = System.currentTimeMillis()
         if (now - pendingTriedAt < 5 * 60_000L) return
         if (Repo.subscriptions.value.none { it.updatedAt == 0L }) return
@@ -350,44 +371,71 @@ object Importer {
     }
 
     /**
-     * Looks up the country by IP for servers whose names give no hint, over HTTPS ([countryOf]).
-     * Host names are resolved first ([resolveIp]). Results are stored, so each host is resolved once; a host that
-     * gave nothing (no address, no country) is left alone for [LOOKUP_RETRY_MS] — it was looked up again on every
-     * app start and subscription refresh, two DNS-over-HTTPS requests each time.
+     * Looks up the country by IP for servers whose names give no hint, over HTTPS ([countryOf]), host names resolved
+     * first by DNS-over-HTTPS ([resolveIp]) — all of it **through one of the user's servers** ([ViaServer]), never
+     * from the phone's own address: the services would otherwise learn which servers this IP uses (SECURITY.md S6).
+     * No server that answered lately → nothing now; it runs again when a server connects ([pendingAfterConnect]).
+     * Results are stored, so each host is resolved once; a host that gave nothing (no address, no country) is left
+     * alone for [LOOKUP_RETRY_MS].
      */
-    suspend fun resolveCountries() = withContext(Dispatchers.IO) {
+    suspend fun resolveCountries() = countryLock.withLock { resolveCountriesNow() }
+
+    /** One lookup at a time: callers overlap (app start, a refresh, a connection) and each would start a proxy. */
+    private val countryLock = kotlinx.coroutines.sync.Mutex()
+
+    private suspend fun resolveCountriesNow() = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val missing = Repo.servers.value.filter {
             it.country == null && !it.countryManual && it.host.isNotBlank() && (lookupFailed[it.host] ?: 0L) + LOOKUP_RETRY_MS <= now
         }
         if (missing.isEmpty()) return@withContext
         val byHost = missing.groupBy { it.host }
+        val servers = ViaServer.candidates(2)
+        if (servers.isEmpty()) {
+            AppLog.debug(TAG, "country by IP: ${missing.size} waiting for a working server to look up through")
+            return@withContext
+        }
+        for (server in servers) {
+            answered.set(false)
+            val result = runCatching { ViaServer.withProxy(server) { proxy -> lookUp(byHost.keys, proxy) } }
+                .onFailure { AppLog.debug(TAG, "country by IP through ${server.name}: ${it.message}") }.getOrNull() ?: continue
+            // Not a single service answered: the way through this server doesn't work, try the next one.
+            if (!answered.get()) {
+                AppLog.debug(TAG, "country by IP through ${server.name}: no service answered")
+                continue
+            }
+            val (ipOf, codes) = result
+            val found = HashMap<String, String>()
+            ipOf.forEach { (host, ip) -> codes[ip]?.let { cc -> byHost[host]?.forEach { found[it.id] = cc } } }
+            val unresolved = byHost.keys - ipOf.keys
+            byHost.filterValues { list -> list.none { it.id in found } }.keys.forEach { lookupFailed[it] = now }
+            AppLog.debug(TAG, "country by IP through ${server.name}: ${found.size} of ${missing.size} resolved" +
+                if (unresolved.isEmpty()) "" else "; no address for ${unresolved.joinToString()}")
+            Repo.setCountries(found)
+            return@withContext
+        }
+    }
+
+    /** Some lookup service answered during the current [lookUp] (else the way through the server is broken). */
+    private val answered = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Addresses of [hosts] and the countries of those addresses, every request through [proxy]. */
+    private suspend fun lookUp(hosts: Set<String>, proxy: java.net.Proxy): Pair<Map<String, String>, Map<String, String>> = coroutineScope {
         // A few at a time: a big subscription must not open dozens of connections at once.
         val sem = kotlinx.coroutines.sync.Semaphore(6)
-        val ipOf = coroutineScope { byHost.keys.map { h -> async { sem.withPermit { h to resolveIp(h) } } }.awaitAll() }
+        val ipOf = hosts.map { h -> async { sem.withPermit { h to resolveIp(h, proxy) } } }.awaitAll()
             .mapNotNull { (h, ip) -> ip?.let { h to it } }.toMap()
-        val hostsByIp = ipOf.entries.groupBy({ it.value }, { it.key })
-        val found = HashMap<String, String>()
-        // Over HTTPS only: the list of server addresses must not be visible on the way.
-        val codes = coroutineScope {
-            hostsByIp.keys.map { ip -> async { sem.withPermit { ip to countryOf(ip) } } }.awaitAll()
-        }
-        codes.forEach { (ip, cc) ->
-            if (cc != null) hostsByIp[ip]?.forEach { host -> byHost[host]?.forEach { found[it.id] = cc } }
-        }
-        val unresolved = byHost.keys - ipOf.keys
-        val failed = byHost.filterValues { list -> list.none { it.id in found } }.keys
-        failed.forEach { lookupFailed[it] = now }
-        AppLog.debug(TAG, "country by IP: ${found.size} of ${missing.size} resolved" + if (unresolved.isEmpty()) "" else "; no address for ${unresolved.joinToString()}")
-        Repo.setCountries(found)
+        val codes = ipOf.values.distinct().map { ip -> async { sem.withPermit { ip to countryOf(ip, proxy) } } }.awaitAll()
+            .mapNotNull { (ip, cc) -> cc?.let { ip to it } }.toMap()
+        ipOf to codes
     }
 
     /** Hosts whose country lookup gave nothing, and when (in memory: a restart may try again). */
     private val lookupFailed = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private const val LOOKUP_RETRY_MS = 24 * 3_600_000L
 
-    /** Country code for an IP from public HTTPS services (the next one is tried if one fails). */
-    private fun countryOf(ip: String): String? {
+    /** Country code for an IP from public HTTPS services (the next one is tried if one fails), through [proxy]. */
+    private fun countryOf(ip: String, proxy: java.net.Proxy): String? {
         val q = java.net.URLEncoder.encode(ip, "UTF-8")
         val services = listOf<Pair<String, (String) -> String?>>(
             "https://api.country.is/$q" to { body -> jsonField(body, "country") },
@@ -395,12 +443,13 @@ object Importer {
             "https://ipinfo.io/$q/country" to { body -> body.trim().takeIf { it.length == 2 } },
         )
         for ((url, parse) in services) {
-            Activity.count(Activity.Kind.COUNTRY)
-            val cc = Energy.track(Activity.Kind.COUNTRY) { runCatching {
-                val c = (URL(url).openConnection() as HttpURLConnection).apply { connectTimeout = 8000; readTimeout = 8000 }
-                if (c.responseCode !in 200..299) return@runCatching null
+            val cc = runCatching {
+                val c = (URL(url).openConnection(proxy) as HttpURLConnection).apply { connectTimeout = 8000; readTimeout = 8000 }
+                val code = c.responseCode
+                answered.set(true)
+                if (code !in 200..299) return@runCatching null
                 parse(readLimited(c, 64_000))
-            }.getOrNull() }?.uppercase()?.takeIf { it.length == 2 && it.all(Char::isLetter) }
+            }.getOrNull()?.uppercase()?.takeIf { it.length == 2 && it.all(Char::isLetter) }
             if (cc != null) return cc
         }
         return null
@@ -410,6 +459,9 @@ object Importer {
         ((Json.parseToJsonElement(body) as? JsonObject)?.get(name) as? JsonPrimitive)?.contentOrNull
 
     private const val MAX_SUBSCRIPTION = 10_000_000
+
+    /** Servers taken from one subscription (a 10 MB body could hold ~100 000 links, SECURITY.md S19). */
+    private const val MAX_SUB_SERVERS = 2000
 
     /** Reads a response body, refusing more than [max] bytes (a huge reply must not exhaust memory). */
     private fun readLimited(c: HttpURLConnection, max: Int): String {
@@ -436,40 +488,32 @@ object Importer {
      * If that answer is private or fake (a fake-IP proxy app on the network, e.g. 198.18.x), ask
      * DNS-over-HTTPS instead.
      */
-    private fun resolveIp(host: String): String? {
+    /** [host]'s IPv4 address: a literal as it is, a name by DNS-over-HTTPS through [proxy] (never the system's DNS). */
+    private fun resolveIp(host: String, proxy: java.net.Proxy): String? {
         val h = host.trim('[', ']')
         if (IPV4.matches(h)) return h
         if (':' in h) return h // IPv6 literal: the lookup services take it as is
-        val system = runCatching { InetAddress.getAllByName(h).filterIsInstance<Inet4Address>().firstOrNull() }.getOrNull()
-        if (system != null && isPublic(system)) return system.hostAddress
-        return dohLookup(h)
+        return dohLookup(h, proxy)
     }
 
     private val IPV4 = Regex("""\d{1,3}(\.\d{1,3}){3}""")
 
-    private fun isPublic(a: Inet4Address): Boolean {
-        val b = a.address.map { it.toInt() and 0xFF }
-        val fakeIp = b[0] == 198 && (b[1] == 18 || b[1] == 19)
-        val cgnat = b[0] == 100 && b[1] in 64..127
-        return !(a.isSiteLocalAddress || a.isLoopbackAddress || a.isLinkLocalAddress || a.isAnyLocalAddress || fakeIp || cgnat)
-    }
-
     /** A record via DNS-over-HTTPS (Google, then Cloudflare), JSON API. */
-    private fun dohLookup(host: String): String? {
+    private fun dohLookup(host: String, proxy: java.net.Proxy): String? {
         val q = java.net.URLEncoder.encode(host, "UTF-8")
         for (url in listOf("https://dns.google/resolve?name=$q&type=A", "https://cloudflare-dns.com/dns-query?name=$q&type=A")) {
-            Activity.count(Activity.Kind.DOH)
-            val ip = Energy.track(Activity.Kind.DOH) { runCatching {
-                val c = (URL(url).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 5000
-                    readTimeout = 5000
+            val ip = runCatching {
+                val c = (URL(url).openConnection(proxy) as HttpURLConnection).apply {
+                    connectTimeout = 8000
+                    readTimeout = 8000
                     setRequestProperty("Accept", "application/dns-json")
                 }
-                val body = c.inputStream.bufferedReader().use { it.readText() }
+                val body = readLimited(c, 64 * 1024)
+                answered.set(true)
                 val answers = (Json.parseToJsonElement(body) as JsonObject)["Answer"] as? JsonArray
                 answers?.mapNotNull { (it as? JsonObject)?.get("data")?.let { d -> (d as JsonPrimitive).contentOrNull } }
                     ?.firstOrNull { IPV4.matches(it) }
-            }.getOrNull() }
+            }.getOrNull()
             if (ip != null) return ip
         }
         return null

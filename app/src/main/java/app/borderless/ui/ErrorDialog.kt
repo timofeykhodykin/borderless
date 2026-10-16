@@ -8,7 +8,7 @@ import android.widget.Toast
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import app.borderless.ui.AppAlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -32,7 +32,7 @@ fun ErrorDialog() {
     val pending by Errors.pending.collectAsStateWithLifecycle()
     val report = pending.firstOrNull() ?: return
     val context = LocalContext.current
-    AlertDialog(
+    AppAlertDialog(
         onDismissRequest = { Errors.dismiss(report.id) },
         containerColor = Palette.background,
         title = { Text(stringResource(if (report.crash) R.string.err_crash_title else R.string.err_title)) },
@@ -49,7 +49,7 @@ fun ErrorDialog() {
 
 private fun copy(context: Context, text: String) {
     runCatching {
-        context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Border(less) error", text))
+        copySensitive(context, "Border(less) error", text)
         // Android 13+ confirms copying itself.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) Toast.makeText(context, R.string.copied, Toast.LENGTH_SHORT).show()
     }

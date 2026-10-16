@@ -303,6 +303,9 @@ object LinkParser {
         val main = outbounds.firstOrNull { it.str("tag") == "proxy" }
             ?: outbounds.firstOrNull { it.str("protocol") !in system }
             ?: throw UnsupportedLinkException("no proxy outbound in JSON")
+        // A "server" that is really the direct exit (or a sink) would send everything around the tunnel while the app
+        // shows it connected — also if a subscription refresh slips it in (SECURITY.md S7).
+        if (main.str("protocol") in system) throw UnsupportedLinkException("the proxy outbound is ${main.str("protocol")}, not a server")
         val byTag = outbounds.associateBy { it.str("tag") }
         val deps = LinkedHashMap<String, JsonObject>()
         fun collect(o: JsonObject) {
@@ -313,6 +316,7 @@ object LinkParser {
             )
             refs.forEach { tag ->
                 val dep = byTag[tag] ?: return@forEach
+                if (dep.str("protocol") in system) throw UnsupportedLinkException("a chain step is ${dep.str("protocol")}, not a server")
                 if (tag !in deps && dep !== main) {
                     deps[tag] = dep
                     collect(dep)

@@ -52,7 +52,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Insights
 import androidx.compose.material.icons.rounded.NetworkPing
 import androidx.compose.material.icons.rounded.PowerSettingsNew
-import androidx.compose.material3.AlertDialog
+import app.borderless.ui.AppAlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -142,6 +142,7 @@ fun AddSheet(initial: String = "", onDismiss: () -> Unit) {
                 ),
                 textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Palette.text),
             )
+            BundlePreview(text)
             result?.let { r ->
                 Spacer(Modifier.height(10.dp))
                 ImportReport(r)
@@ -298,7 +299,8 @@ fun ServerSheet(server: Server, ping: PingRecord?, onConnect: () -> Unit, onStat
     if (renaming) ServerRenameDialog(server) { renaming = false }
     if (sharing) ShareSheet(Repo.realName(server), Repo.shareServer(server.id), allowKeep = false) { sharing = false }
     if (confirmDelete) {
-        AlertDialog(
+        AppAlertDialog(
+            irreversible = true,
             onDismissRequest = { confirmDelete = false },
             confirmButton = { TextButton({ Repo.removeServer(server.id); confirmDelete = false; onDismiss() }) { Text(stringResource(R.string.delete), color = Palette.danger) } },
             dismissButton = { TextButton({ confirmDelete = false }) { Text(stringResource(R.string.cancel)) } },
@@ -343,7 +345,7 @@ private fun GroupChip(label: String, selected: Boolean, onClick: () -> Unit) {
 private fun CountryDialog(server: Server, onDismiss: () -> Unit) {
     var value by remember { mutableStateOf(server.country.orEmpty()) }
     val detected = remember(value) { if (value.length == 2) value.uppercase() else Countries.detect(value) }
-    AlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Palette.background,
         title = { Text(stringResource(R.string.country_title)) },
@@ -417,6 +419,47 @@ fun ServerRenameDialog(server: Server, onDismiss: () -> Unit) {
  * What an import did: the line of what was added, then every problem with what it was about (a short
  * excerpt), a plain explanation and, small, the technical detail.
  */
+/**
+ * What a Border(less) link in [text] holds, before anything is added (SECURITY.md S15): such a link is unreadable
+ * Base64, and it may come from any web page or message. Groups, their servers (name and address) and subscriptions
+ * (address only: the rest of the URL is the provider's key).
+ */
+@Composable
+private fun BundlePreview(text: String) {
+    val bundles = remember(text) {
+        text.split('\n', '\r', ' ', '\t').filter(app.borderless.data.ShareFormat::isInternal).mapNotNull(app.borderless.data.ShareFormat::decode)
+    }
+    if (bundles.isEmpty()) return
+    val defaultName = Repo.groupName(Repo.group(Group.DEFAULT_ID))
+    Spacer(Modifier.height(10.dp))
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Palette.card).padding(14.dp)
+            .heightIn(max = 240.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(stringResource(R.string.bundle_inside), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Palette.text)
+        for (g in bundles.flatMap { it.groups }) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                (if (g.default) defaultName else g.name ?: g.subs.firstOrNull()?.name ?: "—") + " · " +
+                    stringResource(R.string.bundle_counts, g.servers.size, g.subs.size),
+                fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Palette.textSecondary,
+            )
+            val lines = g.servers.take(PREVIEW_LINES).map { s ->
+                runCatching { app.borderless.config.LinkParser.parse(s.l).let { "${it.name} — ${it.host}" } }.getOrDefault(s.l.substringBefore("://") + "://…") +
+                    if (s.off) " · " + stringResource(R.string.bundle_hidden) else ""
+            } + g.subs.take(PREVIEW_LINES).map { sub ->
+                stringResource(R.string.bundle_sub, runCatching { java.net.URL(sub.url).host }.getOrDefault("?"))
+            }
+            lines.forEach { Text("• $it", fontSize = 12.5.sp, color = Palette.text, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            val more = (g.servers.size - PREVIEW_LINES).coerceAtLeast(0) + (g.subs.size - PREVIEW_LINES).coerceAtLeast(0)
+            if (more > 0) Text(stringResource(R.string.import_and_more, more), fontSize = 12.sp, color = Palette.textMuted)
+        }
+    }
+}
+
+private const val PREVIEW_LINES = 8
+
 @Composable
 private fun ImportReport(r: Importer.Result) {
     Column(

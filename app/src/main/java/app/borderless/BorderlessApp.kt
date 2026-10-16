@@ -42,11 +42,17 @@ class BorderlessApp : Application() {
         AppLog.init(this)
         // From here on crashes are saved and shown on the next start; other failures as a dialog.
         Errors.install(this)
+        AppLog.debug(
+            "app", "process started: Border(less) ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}${if (BuildConfig.DEBUG) ", debug" else ""}), " +
+                "Android ${android.os.Build.VERSION.RELEASE}, pid ${android.os.Process.myPid()}",
+        )
         AppLog.debug("Device", DeviceProfile.info.describe())
-        Crypto.initError?.let { Errors.report(it, "encryption key", getString(R.string.err_crypto)) }
+        Crypto.initError?.let { Errors.report(it, "encryption key", getString(if (Crypto.locked) R.string.err_crypto_locked else R.string.err_crypto)) }
         // Files handed to other apps for sharing (logs) are not kept longer than needed.
         runCatching { java.io.File(cacheDir, "share").deleteRecursively() }
         Repo.init(this)
+        Errors.guard("detailed log", Unit, show = false) { Repo.expireVerbose() }
+        app.borderless.core.Updater.init(this)
         Errors.guard("statistics database", Unit) {
             StatsDb.init(this)
             StatsDb.prune(Repo.settings.value.statsDays)
@@ -58,7 +64,6 @@ class BorderlessApp : Application() {
         Errors.guard("battery saving", Unit, show = false) { Eco.init(this) }
         Errors.guard("Xray core", Unit) { CoreEnv.attach(this) }
         scope.launch(Dispatchers.IO) { Errors.guard("Xray core", Unit) { CoreEnv.ensure() } }
-        scope.launch(Dispatchers.Default) { Errors.guard("energy bookkeeping", Unit, show = false) { Energy.calibrate() } }
         Errors.guard("notification channel", Unit, show = false) { Notifications.ensureChannel(this) }
         // The tile mirrors the tunnel status.
         // The chosen colour scheme, from the first frame on and whenever it changes.
