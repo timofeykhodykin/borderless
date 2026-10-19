@@ -34,6 +34,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material3.Icon
+import app.borderless.ui.theme.StateColors
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import kotlinx.coroutines.delay
@@ -192,6 +195,7 @@ private fun Cell(
     modifier: Modifier = Modifier,
 ) {
     val shape = RoundedCornerShape(7.dp)
+    val down = p != null && !p.ok && !waiting
     Box(
         modifier
             .size(size)
@@ -201,7 +205,9 @@ private fun Cell(
                     p == null -> Palette.untested
                     // While waiting, keep a faint hint of the previous result.
                     waiting && p.ok -> Palette.ping(p.ms).copy(alpha = 0.35f)
-                    waiting -> Palette.untested
+                    // It gave no reply last time: stays grey (the cross hides while it is checked again). It turned
+                    // white, the colour of a server never checked — a white square in the README's animation.
+                    waiting -> Palette.unavailable
                     p.ok -> Palette.ping(p.ms)
                     else -> Palette.unavailable
                 }
@@ -218,7 +224,12 @@ private fun Cell(
             .combinedClickable(onClick = { onClick(server) }, onLongClick = { onLongClick(server) }),
         contentAlignment = Alignment.Center,
     ) {
-        if (p != null && !p.ok && !waiting) CrossMark(Modifier.size(size), Palette.unavailableMark)
+        // A limited-network server keeps its group's place; the tower (as in the lists) marks it — without its signal
+        // arcs, in grey, when it gave no reply (instead of the cross).
+        if (server.limited) {
+            if (down) Icon(app.borderless.ui.TowerIcons.silent, null, Modifier.size(size * 0.5f), tint = Palette.unavailableMark)
+            else Icon(app.borderless.ui.TowerIcons.tower, null, Modifier.size(size * 0.5f), tint = StateColors.limitedOnCell)
+        } else if (down) CrossMark(Modifier.size(size), Palette.unavailableMark)
     }
 }
 

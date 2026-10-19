@@ -63,18 +63,25 @@ import app.borderless.core.Phase
 import app.borderless.data.StatsMath
 import app.borderless.ui.theme.Body
 import app.borderless.ui.theme.Palette
+import app.borderless.ui.theme.StateColors
 import java.text.SimpleDateFormat
 import java.util.Date
 import kotlin.math.abs
 import kotlin.math.ceil
 
 /**
- * Categorical colours for several servers on one chart (validated colour-blind-safe order).
- * A server keeps its colour while it stays selected; there are never more than eight series.
+ * Categorical colours for several servers on one chart (validated colour-blind-safe order), lighter on the dark
+ * schemes. A server keeps its colour while it stays selected; there are never more than eight series.
  */
-val SeriesColors = listOf(
+val SeriesColors: List<Color> get() = if (Palette.dark) SERIES_DARK else SERIES_LIGHT
+
+private val SERIES_LIGHT = listOf(
     Color(0xFF2A78D6), Color(0xFFEB6834), Color(0xFF1BAF7A), Color(0xFFEDA100),
     Color(0xFFE87BA4), Color(0xFF008300), Color(0xFF4A3AA7), Color(0xFFE34948),
+)
+private val SERIES_DARK = listOf(
+    Color(0xFF64A1EE), Color(0xFFF78955), Color(0xFF3FBE90), Color(0xFFEDB345),
+    Color(0xFFE98DB2), Color(0xFF54B85B), Color(0xFF9887E8), Color(0xFFEF6661),
 )
 
 /**
@@ -87,6 +94,7 @@ data class Series(val label: String, val color: Color, val points: List<StatsMat
 enum class BandKind(val label: Int) {
     OFF(R.string.band_off),
     DIRECT(R.string.band_direct),
+    PAUSED(R.string.band_paused),
     NO_NETWORK(R.string.band_no_network),
     LIMITED(R.string.band_limited),
     CHARGING(R.string.band_charging),
@@ -104,14 +112,15 @@ enum class BandKind(val label: Int) {
 
     val fill: Color
         get() = when (this) {
-            OFF -> Color(0xFFE7DFDB)
-            DIRECT -> Palette.warning.copy(alpha = 0.45f)
-            NO_NETWORK -> Color(0xFFDDE3EC)
-            LIMITED -> Color(0xFFF1D2BF)
-            CHARGING -> Color(0xFFDCEFD8)
-            SCREEN_OFF -> Color(0xFFE4E0EC)
-            SAVER -> Color(0xFFF2B866)
-            METERED -> Color(0xFF9FB4DE)
+            OFF -> StateColors.off
+            DIRECT -> StateColors.direct.band
+            PAUSED -> StateColors.paused.band
+            NO_NETWORK -> StateColors.noNetwork.band
+            LIMITED -> StateColors.limited.band
+            CHARGING -> Palette.scheme.chart.charging
+            SCREEN_OFF -> Palette.scheme.chart.screenOff
+            SAVER -> Palette.scheme.chart.saver
+            METERED -> Palette.scheme.chart.metered
             ECO -> Palette.accentStrong.copy(alpha = 0.45f)
         }
 }
@@ -154,7 +163,8 @@ fun bands(segments: List<StatsMath.Segment>, from: Long, to: Long): List<Band> {
     for (s in segments.sortedBy { it.start }) {
         add(cursor, s.start, BandKind.OFF)
         when (s.phase) {
-            Phase.DIRECT, Phase.PAUSED -> add(s.start, s.end, BandKind.DIRECT)
+            Phase.DIRECT -> add(s.start, s.end, BandKind.DIRECT)
+            Phase.PAUSED -> add(s.start, s.end, BandKind.PAUSED)
             Phase.NO_NETWORK -> add(s.start, s.end, BandKind.NO_NETWORK)
             Phase.LIMITED -> add(s.start, s.end, BandKind.LIMITED)
             else -> {}
@@ -681,10 +691,10 @@ private fun DrawScope.drawSeries(
 fun phaseColor(p: Phase): Color = when (p) {
     Phase.CONNECTED -> Palette.accent
     Phase.SEARCHING -> Palette.accentContainer
-    Phase.DIRECT -> Palette.warning
-    Phase.PAUSED -> Palette.danger
-    Phase.NO_NETWORK -> Palette.textMuted
-    Phase.LIMITED -> Color(0xFFE2A983)
+    Phase.DIRECT -> StateColors.direct.strong
+    Phase.PAUSED -> StateColors.paused.strong
+    Phase.NO_NETWORK -> StateColors.noNetwork.strong
+    Phase.LIMITED -> StateColors.limited.strong
     Phase.OFF -> Palette.card
 }
 

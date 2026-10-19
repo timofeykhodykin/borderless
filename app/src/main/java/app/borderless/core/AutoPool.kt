@@ -98,7 +98,7 @@ object AutoPool {
 
     private suspend fun curate() = mutex.withLock {
         if (!enabled) return@withLock
-        val servers = Repo.servers.value
+        val servers = Repo.servers.value.filter { !it.limited }
         val now = System.currentTimeMillis()
         StatsDb.flush() // include the scan that just finished
         val stats = StatsDb.poolStats(now - LONG_MS, now - SHORT_MS)
@@ -132,7 +132,7 @@ object AutoPool {
         // Careful checks: hidden servers are not shown to the network without need (SECURITY.md S9).
         if (Repo.settings.value.carefulScans) return emptyList()
         val pool = Repo.auto.value.pool
-        val hidden = Repo.servers.value.filter { it.id !in pool }
+        val hidden = Repo.servers.value.filter { it.id !in pool && !it.limited }
         if (hidden.isEmpty()) return emptyList()
         val order = ranked.withIndex().associate { (i, id) -> id to i }
         val best = hidden.minByOrNull { order[it.id] ?: Int.MAX_VALUE }
@@ -159,7 +159,7 @@ object AutoPool {
         offlineSaid = false
         val pool = Repo.auto.value.pool
         val order = ranked.withIndex().associate { (i, id) -> id to i }
-        val hidden = Repo.servers.value.filter { it.id !in pool && it.id != avoid }.sortedBy { order[it.id] ?: Int.MAX_VALUE }
+        val hidden = Repo.servers.value.filter { it.id !in pool && it.id != avoid && !it.limited }.sortedBy { order[it.id] ?: Int.MAX_VALUE }
         if (hidden.isEmpty()) return@coroutineScope null
         AppLog.event(LText.of(R.string.ev_auto_rescue, hidden.size), AppLog.Kind.WARN)
         val ids = hidden.map { it.id }.toSet()

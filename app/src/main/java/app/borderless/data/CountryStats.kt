@@ -18,14 +18,15 @@ object CountryStats {
     }
 
     /**
-     * How reliably each country's servers answer: answered checks of all its servers over all checks, smoothed
+     * How reliably each country's servers answer: answered time slices of all its servers over all of them (by time, see
+     * [StatsMath.availability]), smoothed
      * (one success and one failure added, so a country checked twice doesn't top one checked a thousand times).
      * Countries without checks are left out.
      */
     fun stability(servers: List<Server>, aggregates: Map<String, StatsDb.Aggregate>): Map<String, Double> =
         servers.groupBy(Countries::of).mapNotNull { (code, list) ->
-            val count = list.sumOf { aggregates[it.id]?.count ?: 0 }
-            val ok = list.sumOf { aggregates[it.id]?.ok ?: 0 }
-            if (count == 0) null else code to (ok + 1.0) / (count + 2.0)
+            val count = list.sumOf { aggregates[it.id]?.weight ?: 0.0 }
+            val ok = list.sumOf { aggregates[it.id]?.answered ?: 0.0 }
+            if (count == 0.0) null else code to (ok + 1.0) / (count + 2.0)
         }.toMap()
 }

@@ -59,6 +59,9 @@ import app.borderless.ui.settings.LogScreen
 import app.borderless.ui.settings.SettingsPage
 import app.borderless.ui.settings.SettingsScreen
 import app.borderless.ui.theme.BorderlessTheme
+import app.borderless.ui.theme.Palette
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.toArgb
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -78,12 +81,14 @@ class MainActivity : ComponentActivity() {
     private var incoming by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
+        applySystemBars()
         super.onCreate(savedInstanceState)
         handleIntent(intent)
 
         setContent {
             BorderlessTheme {
+                // Status / navigation bar icons and the window behind the screens follow the scheme, not the system.
+                LaunchedEffect(Palette.scheme) { applySystemBars() }
                 // Unexpected errors from anywhere in the app, one dialog at a time.
                 ErrorDialog()
                 // Screens open on top of each other: "main|stats|subStats:<id>|serverStats:<id>". Back closes the
@@ -246,6 +251,14 @@ class MainActivity : ComponentActivity() {
         Activity.samplePower()
         Activity.uiShown(true)
         app.borderless.core.Eco.refreshEstimate()
+    }
+
+    /** Dark bar icons on a light scheme, light ones on a dark scheme; the window shows the scheme's background. */
+    private fun applySystemBars() {
+        val transparent = android.graphics.Color.TRANSPARENT
+        val style = if (Palette.dark) androidx.activity.SystemBarStyle.dark(transparent) else androidx.activity.SystemBarStyle.light(transparent, transparent)
+        enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Palette.background.toArgb()))
     }
 
     override fun onStop() {

@@ -1,5 +1,7 @@
 package app.borderless.data
 
+import app.borderless.R
+
 /** Calculations for the "App activity" statistics (pure, unit-tested). */
 object ActivityMath {
     /** Two power samples further apart than this are not joined (the app was not running in between). */
@@ -87,34 +89,134 @@ object ActivityMath {
     fun total(totals: Map<String, StatsDb.ActivityTotal>, group: Activity.Group): Long =
         Activity.Kind.entries.filter { it.group == group }.sumOf { totals[it.name]?.n ?: 0L }
 
-    /** One line of the estimated energy breakdown; [radioShare]: part of it spent on the radio (0..1). */
-    data class Share(val kinds: List<Activity.Kind>, val mj: Long, val share: Double, val radioShare: Double = 0.0)
+    /**
+     * The lines of the battery breakdown as the user thinks of the app's work. The kinds stay separate in the
+     * statistics (counted, exported, measured one by one); here the ones that are the same thing to the user are
+     * added up.
+     */
+    enum class Part(val label: Int, val kinds: List<Activity.Kind>) {
+        /** Keeping an eye on the server in use and on the internet. */
+        CONNECTION(
+            R.string.act_part_connection,
+            listOf(
+                Activity.Kind.PING_RIDE, Activity.Kind.PING_PERIODIC, Activity.Kind.PING_STALL, Activity.Kind.PING_VERIFY,
+                Activity.Kind.PING_FAILED, Activity.Kind.PING_WAKE, Activity.Kind.NET_CHECK,
+            ),
+        ),
+        /** Finding a working server when there is none (failover, retries, the hidden servers' rescue). */
+        SEARCH(R.string.act_part_search, listOf(Activity.Kind.SCAN_ENGINE, Activity.Kind.PROBE_RESCUE)),
+        /** Rescans for a faster server. */
+        FASTER(
+            R.string.act_part_faster,
+            listOf(Activity.Kind.SCAN_BACKGROUND, Activity.Kind.PROBE_EXPLORE, Activity.Kind.PROBE, Activity.Kind.RESCAN_SKIPPED),
+        ),
+        /** Scans the user caused: opening the app, "Ping all", a new strategy. */
+        ASKED(R.string.act_part_asked, listOf(Activity.Kind.SCAN_OPEN, Activity.Kind.SCAN_MANUAL, Activity.Kind.SCAN_STRATEGY)),
+        SUBSCRIPTIONS(R.string.act_part_subs, listOf(Activity.Kind.SUB_UPDATE, Activity.Kind.SCAN_NEW)),
+        LIMITED(R.string.act_part_limited, listOf(Activity.Kind.LIMITED_START)),
+        TRAFFIC(R.string.act_core_base, listOf(Activity.Kind.CORE_BASE, Activity.Kind.CORE_START)),
+        SCREENS(R.string.act_ui_base, listOf(Activity.Kind.UI_BASE)),
+        /** The app's bookkeeping: statistics, logs, data files. */
+        UPKEEP(
+            R.string.act_part_stats,
+            listOf(
+                Activity.Kind.DB_COMMIT, Activity.Kind.STATS_SAMPLE, Activity.Kind.LOG_WRITE, Activity.Kind.CURRENT_METER,
+                Activity.Kind.FILE_WRITE,
+            ),
+        ),
+        /** Lines too small to matter, added up (see [energyShares]). */
+        OTHER(R.string.act_part_other, emptyList());
+
+        companion object {
+            fun of(kind: Activity.Kind): Part = entries.firstOrNull { kind in it.kinds } ?: OTHER
+        }
+    }
 
     /**
-     * Estimated energy by part of the app, largest first: scans (with their server checks), pings,
-     * hidden-server checks, other network actions, core starts and disk, the core with the app's screens.
+     * Kinds the user sees one by one ("Cost of one action", "In detail"): discrete actions. The app's bookkeeping
+     * and the continuous costs (the core at work, the screens, a limited-network server's running core) have no
+     * meaningful count or cost per time.
+     */
+    fun isAction(kind: Activity.Kind): Boolean =
+        Part.of(kind) !in setOf(Part.UPKEEP, Part.TRAFFIC, Part.SCREENS, Part.LIMITED)
+
+    /** One line of the estimated energy breakdown; [radioShare]: part of it spent on the radio (0..1). */
+    data class Share(val part: Part, val mj: Long, val share: Double, val radioShare: Double = 0.0)
+
+    /** Lines under this share of the total are added up as [Part.OTHER]. */
+    const val SMALL_SHARE = 0.01
+
+    /**
+     * Estimated energy by [Part], largest first; parts under [SMALL_SHARE] go into one [Part.OTHER] line (last) when
+     * there are at least two of them. Every kind ends up in some line, so the shares sum to 1.
      */
     fun energyShares(totals: Map<String, StatsDb.ActivityTotal>): List<Share> {
-        val parts = listOf(
-            listOf(Activity.Kind.SCAN_BACKGROUND), listOf(Activity.Kind.SCAN_OPEN), listOf(Activity.Kind.SCAN_MANUAL, Activity.Kind.SCAN_STRATEGY), listOf(Activity.Kind.SCAN_ENGINE),
-            listOf(Activity.Kind.PING_RIDE), listOf(Activity.Kind.PING_PERIODIC),
-            listOf(Activity.Kind.PING_STALL, Activity.Kind.PING_VERIFY, Activity.Kind.PING_FAILED, Activity.Kind.PING_WAKE),
-            listOf(Activity.Kind.PROBE_RESCUE),
-            // Subscriptions with the checks of the servers they add, and internet checks.
-            listOf(Activity.Kind.SUB_UPDATE, Activity.Kind.SCAN_NEW, Activity.Kind.NET_CHECK),
-            listOf(Activity.Kind.CORE_START, Activity.Kind.FILE_WRITE),
-            // What collecting statistics and logs costs by itself.
-            listOf(Activity.Kind.DB_COMMIT, Activity.Kind.STATS_SAMPLE, Activity.Kind.LOG_WRITE, Activity.Kind.CURRENT_METER),
-            listOf(Activity.Kind.UI_BASE),
-            listOf(Activity.Kind.CORE_BASE),
-        )
-        val mjs = parts.map { kinds -> kinds to kinds.sumOf { totals[it.name]?.mj ?: 0L } }
-        val sum = mjs.sumOf { it.second }.coerceAtLeast(1)
-        return mjs.filter { it.second > 0 }.map { (k, mj) ->
+        fun sumOf(kinds: List<Activity.Kind>, f: (StatsDb.ActivityTotal) -> Long) = kinds.sumOf { totals[it.name]?.let(f) ?: 0L }
+        // Kinds of no part (none today, but a new one must not fall out of the sum) count as "other".
+        val loose = Activity.Kind.entries.filter { k -> Part.entries.none { k in it.kinds } }
+        val parts = Part.entries.map { p -> p to (if (p == Part.OTHER) loose else p.kinds) }
+            .map { (p, kinds) -> Triple(p, sumOf(kinds) { it.mj }, sumOf(kinds) { it.cpuMs }) }
+            .filter { it.second > 0 }
+        val sum = parts.sumOf { it.second }.coerceAtLeast(1)
+        val small = parts.filter { it.first == Part.OTHER || it.second.toDouble() / sum < SMALL_SHARE }
+        val lines = if (small.size >= 2) parts - small.toSet() + Triple(Part.OTHER, small.sumOf { it.second }, small.sumOf { it.third }) else parts
+        return lines.map { (p, mj, cpuMs) ->
             // CPU energy follows from the CPU time; the rest of the estimate is the radio.
-            val cpuMj = k.sumOf { totals[it.name]?.cpuMs ?: 0L } * Energy.CPU_W
-            Share(k, mj, mj.toDouble() / sum, radioShare = ((mj - cpuMj) / mj).coerceIn(0.0, 1.0))
-        }.sortedByDescending { it.mj }
+            Share(p, mj, mj.toDouble() / sum, radioShare = ((mj - cpuMs * Energy.CPU_W) / mj).coerceIn(0.0, 1.0))
+        }.sortedWith(compareBy<Share> { it.part == Part.OTHER }.thenByDescending { it.mj })
+    }
+
+    /** One write of the activity counters: when, and the energy (mJ) per kind since the previous write. */
+    data class Flush(val ts: Long, val mj: Map<Activity.Kind, Long>)
+
+    /** A time bucket of the energy chart: its middle, how long the app ran in it, the energy (mJ) per part. */
+    data class EnergyBucket(val t: Long, val coveredMs: Long, val mj: Map<Part, Double>) {
+        val total: Double get() = mj.values.sum()
+    }
+
+    /** What the first write in view stands for when the one before it isn't known: one heartbeat. */
+    const val FIRST_FLUSH_MS = 5 * 60_000L
+
+    /**
+     * The energy chart's buckets: the counters are written every few minutes (and before stats queries), each write
+     * holding what happened since the previous one, so its energy is spread evenly over that stretch (at most
+     * [MAX_GAP_MS]: the app wasn't running before) and cut into [buckets] buckets of [from, to). Buckets the app
+     * didn't run in are left out; [EnergyBucket.coveredMs] lets the caller turn energy into an average power while it
+     * ran. Pure, tested.
+     */
+    fun energyOverTime(flushes: List<Flush>, from: Long, to: Long, buckets: Int): List<EnergyBucket> {
+        if (to <= from || buckets <= 0) return emptyList()
+        val width = maxOf(1L, (to - from) / buckets)
+        val covered = LongArray(buckets)
+        val mj = Array(buckets) { DoubleArray(Part.entries.size) }
+        var prev: Long? = null
+        for (f in flushes.sortedBy { it.ts }) {
+            val start = maxOf(f.ts - MAX_GAP_MS, prev ?: (f.ts - FIRST_FLUSH_MS))
+            prev = f.ts
+            val span = f.ts - start
+            if (span <= 0) continue
+            val byPart = DoubleArray(Part.entries.size)
+            f.mj.forEach { (k, v) -> byPart[Part.of(k).ordinal] += v.toDouble() }
+            // Every bucket the stretch overlaps gets its share.
+            var b = ((maxOf(start, from) - from) / width).toInt()
+            while (b < buckets) {
+                val bFrom = from + b * width
+                val bTo = bFrom + width
+                if (bFrom >= minOf(f.ts, to)) break
+                val overlap = minOf(bTo, f.ts, to) - maxOf(bFrom, start, from)
+                if (overlap > 0) {
+                    covered[b] += overlap
+                    for (i in byPart.indices) mj[b][i] += byPart[i] * overlap / span
+                }
+                b++
+            }
+        }
+        return (0 until buckets).filter { covered[it] > 0 }.map { b ->
+            EnergyBucket(
+                from + b * width + width / 2, minOf(covered[b], width),
+                Part.entries.filter { mj[b][it.ordinal] > 0 }.associateWith { mj[b][it.ordinal] },
+            )
+        }
     }
 
     /**

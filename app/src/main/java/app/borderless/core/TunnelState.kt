@@ -43,8 +43,17 @@ data class TunnelStatus(
     val paused: Boolean = false,
     /** CONNECTED under the Manual strategy to a server that stopped answering (the engine stays on it). */
     val unanswered: Boolean = false,
+    /**
+     * The server picked by hand (Manual) that the engine keeps trying. Shown as chosen while it isn't in use
+     * either — e.g. a limited-network server whose core can't start leaves traffic direct, but the choice stays
+     * visible (and retried) instead of silently disappearing.
+     */
+    val selectedId: String? = null,
 ) {
     val active: Boolean get() = phase != Phase.OFF
+
+    /** What the user sees as the chosen server: the one traffic goes through, else the Manual pick. */
+    val chosenId: String? get() = serverId ?: selectedId
 }
 
 object TunnelState {

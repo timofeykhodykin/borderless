@@ -27,6 +27,11 @@ data class ParsedServer(
     val port: Int,
     /** Xray outbounds; the first one is tagged "proxy", the rest are its dependencies (dialerProxy chains). */
     val outbounds: List<JsonObject>,
+    /**
+     * Set for a server reached through the core ([LimitedLink]): [outbounds] then only describe it (no keys
+     * yet); the real outbound comes from the running core (`Limited.connect`).
+     */
+    val limited: LimitedLink? = null,
 )
 
 class UnsupportedLinkException(message: String) : Exception(message)
@@ -35,7 +40,7 @@ object LinkParser {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private const val LEVEL = 8
 
-    val supportedSchemes = listOf("vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "socks", "socks5", "wireguard", "wg")
+    val supportedSchemes = listOf("vless", "vmess", "trojan", "ss", "hysteria2", "hy2", "socks", "socks5", "wireguard", "wg") + LimitedLink.SCHEMES
 
     fun parse(link: String): ParsedServer {
         val s = link.trim()
@@ -49,6 +54,7 @@ object LinkParser {
             "hysteria2", "hy2" -> parseHysteria2(s)
             "socks", "socks5" -> parseSocks(s)
             "wireguard", "wg" -> parseWireguard(s)
+            "wdtt", "qwdtt" -> parseLimited(s)
             "" -> throw UnsupportedLinkException("not a link")
             else -> throw UnsupportedLinkException("$scheme is not supported by Xray")
         }
@@ -295,6 +301,11 @@ object LinkParser {
         }
         val outbound = outbound("wireguard", settings, null)
         return ParsedServer(u.nameOr("WireGuard"), "WireGuard", u.host, u.requirePort(), listOf(outbound))
+    }
+
+    private fun parseLimited(link: String): ParsedServer {
+        val r = LimitedLink.parse(link)
+        return ParsedServer(r.name ?: "WDTT ${r.host}", LimitedLink.PROTOCOL, r.host, r.port, listOf(LimitedLink.placeholder()), limited = r)
     }
 
     private fun parseJsonConfig(config: JsonObject): ParsedServer {

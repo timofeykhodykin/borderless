@@ -1,5 +1,8 @@
 package app.borderless.ui.main
 
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.Folder
 import app.borderless.data.launchSafe
 import app.borderless.data.Errors
@@ -53,6 +56,7 @@ import androidx.compose.material.icons.rounded.Insights
 import androidx.compose.material.icons.rounded.NetworkPing
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import app.borderless.ui.AppAlertDialog
+import app.borderless.ui.CountryDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -60,6 +64,8 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -68,6 +74,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -82,6 +89,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.borderless.core.Limited
 import app.borderless.core.Scanner
 import app.borderless.data.Countries
 import app.borderless.data.Group
@@ -100,6 +108,8 @@ fun AddSheet(initial: String = "", onDismiss: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var text by remember { mutableStateOf(initial) }
+    // A link opened while the sheet is already up replaces what is there (the activity is singleTop).
+    LaunchedEffect(initial) { if (initial.isNotBlank()) text = initial }
     var busy by remember { mutableStateOf(false) }
     val groups by Repo.groups.collectAsStateWithLifecycle()
     // Null = automatic: links to the default group, each subscription to a group of its own.
@@ -203,13 +213,13 @@ fun AddSheet(initial: String = "", onDismiss: () -> Unit) {
                     shape = RoundedCornerShape(16.dp),
                     // Disabled (nothing pasted yet, or adding) stays a paler accent with white text, not Material's grey.
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Palette.accent, contentColor = androidx.compose.ui.graphics.Color.White,
-                        disabledContainerColor = Palette.bar, disabledContentColor = androidx.compose.ui.graphics.Color.White,
+                        containerColor = Palette.accent, contentColor = Palette.onAccent,
+                        disabledContainerColor = Palette.bar, disabledContentColor = Palette.onAccent,
                     ),
                 ) {
-                    if (busy) CircularProgressIndicator(Modifier.size(18.dp), color = androidx.compose.ui.graphics.Color.White, strokeWidth = 2.dp)
+                    if (busy) CircularProgressIndicator(Modifier.size(18.dp), color = Palette.onAccent, strokeWidth = 2.dp)
                     // Explicit: the theme's body style carries a text colour that would win over contentColor.
-                    else Text(stringResource(if (done) R.string.done else R.string.add), color = androidx.compose.ui.graphics.Color.White)
+                    else Text(stringResource(if (done) R.string.done else R.string.add), color = Palette.onAccent)
                 }
             }
             Spacer(Modifier.height(20.dp))
@@ -236,6 +246,9 @@ fun ServerSheet(server: Server, ping: PingRecord?, onConnect: () -> Unit, onStat
     var confirmDelete by remember { mutableStateOf(false) }
     var probing by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
+    var limitedOptions by remember { mutableStateOf(false) }
+    val live by Limited.live.collectAsStateWithLifecycle()
+    val liveNow = live?.takeIf { it.serverId == server.id }
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Palette.background) {
         Column(Modifier.padding(horizontal = 20.dp).navigationBarsPadding()) {
@@ -267,6 +280,21 @@ fun ServerSheet(server: Server, ping: PingRecord?, onConnect: () -> Unit, onStat
                     else -> stringResource(R.string.ping_unavailable)
                 }
             )
+            if (server.limited) {
+                val streams = when {
+                    liveNow != null -> stringResource(R.string.limited_live, liveNow.active, liveNow.wanted)
+                    server.limitedStreams == 0 -> stringResource(R.string.limited_auto)
+                    else -> stringResource(R.string.limited_n_streams, server.limitedStreams)
+                }
+                InfoLine(stringResource(R.string.limited_power_state), streams)
+                val max = remember(server.link, liveNow?.serverLimit) { Limited.maxWorkers(server) ?: liveNow?.serverLimit }
+                if (max != null) {
+                    InfoLine(
+                        stringResource(R.string.limited_server_limit_short),
+                        if (server.limitedIgnoreLimit) "$max · ${stringResource(R.string.limited_limit_ignored)}" else max.toString(),
+                    )
+                }
+            }
             Spacer(Modifier.height(10.dp))
             SheetAction(Icons.Rounded.PowerSettingsNew, stringResource(R.string.action_connect)) { onConnect(); onDismiss() }
             SheetAction(Icons.Rounded.NetworkPing, stringResource(if (probing) R.string.action_probing else R.string.action_probe)) {
@@ -276,6 +304,10 @@ fun ServerSheet(server: Server, ping: PingRecord?, onConnect: () -> Unit, onStat
                 }
             }
             SheetAction(Icons.Rounded.Insights, stringResource(R.string.stats)) { onStats(); onDismiss() }
+            // Limited-network servers carry traffic over several streams; more streams carry more but
+            // cost more battery. The app paces them by itself, or the user fixes a number here.
+            if (server.limited) SheetAction(Icons.Rounded.Bolt, stringResource(R.string.action_limited_power) + " · " +
+                if (server.limitedStreams == 0) stringResource(R.string.limited_auto) else stringResource(R.string.limited_n_streams, server.limitedStreams)) { limitedOptions = true }
             SheetAction(Icons.Rounded.Edit, stringResource(R.string.action_rename)) { renaming = true }
             SheetAction(Icons.Rounded.Flag, stringResource(R.string.action_country)) { askCountry = true }
             // Subscription servers always stay in their subscription's group.
@@ -296,6 +328,7 @@ fun ServerSheet(server: Server, ping: PingRecord?, onConnect: () -> Unit, onStat
     }
 
     if (askCountry) CountryDialog(server, onDismiss = { askCountry = false })
+    if (limitedOptions) LimitedOptionsDialog(server) { limitedOptions = false }
     if (renaming) ServerRenameDialog(server) { renaming = false }
     if (sharing) ShareSheet(Repo.realName(server), Repo.shareServer(server.id), allowKeep = false) { sharing = false }
     if (confirmDelete) {
@@ -342,44 +375,6 @@ private fun GroupChip(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun CountryDialog(server: Server, onDismiss: () -> Unit) {
-    var value by remember { mutableStateOf(server.country.orEmpty()) }
-    val detected = remember(value) { if (value.length == 2) value.uppercase() else Countries.detect(value) }
-    AppAlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Palette.background,
-        title = { Text(stringResource(R.string.country_title)) },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = value, onValueChange = { value = it }, singleLine = true,
-                    placeholder = { Text(stringResource(R.string.country_hint)) },
-                    shape = RoundedCornerShape(14.dp),
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (detected != null) {
-                        FlagIcon(detected, 14.dp)
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    Text(
-                        if (detected != null) Countries.name(detected) else stringResource(R.string.country_unrecognized),
-                        color = Palette.textSecondary, fontSize = 13.sp,
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(enabled = detected != null || value.isBlank(), onClick = {
-                Repo.setCountry(server.id, detected, manual = value.isNotBlank())
-                onDismiss()
-            }) { Text(stringResource(R.string.save)) }
-        },
-        dismissButton = { TextButton(onDismiss) { Text(stringResource(R.string.cancel)) } },
-    )
-}
-
-@Composable
 private fun InfoLine(label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
         Text(label, fontSize = 13.sp, color = Palette.textSecondary, modifier = Modifier.width(90.dp))
@@ -413,6 +408,80 @@ fun ServerRenameDialog(server: Server, onDismiss: () -> Unit) {
         placeholder = Countries.stripFlag(server.name), allowEmpty = true,
         onDismiss = onDismiss,
     ) { Repo.renameServer(server.id, it) }
+}
+
+/**
+ * Limited-network-server power: how many streams it keeps. Automatic (the app paces it by the strategy, the screen
+ * and the battery saving mode), or a fixed number. More streams carry more traffic but cost more battery.
+ */
+@Composable
+internal fun LimitedOptionsDialog(server: Server, onDismiss: () -> Unit) {
+    var auto by remember { mutableStateOf(server.limitedStreams == 0) }
+    var streams by remember { mutableStateOf(server.limitedStreams.takeIf { it > 0 } ?: 4) }
+    var device by remember { mutableStateOf(server.limitedDevice) }
+    var ignoreLimit by remember { mutableStateOf(server.limitedIgnoreLimit) }
+    val live by Limited.live.collectAsStateWithLifecycle()
+    val liveNow = live?.takeIf { it.serverId == server.id }
+    val serverMax = remember(server.link) { Limited.maxWorkers(server) }
+    AppAlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Palette.background,
+        title = { Text(stringResource(R.string.action_limited_power)) },
+        text = {
+            Column {
+                // When the app uses such a server and what it costs: not obvious from the list.
+                Text(stringResource(R.string.limited_about), color = Palette.textSecondary, fontSize = 13.sp)
+                if (liveNow != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(stringResource(R.string.limited_live, liveNow.active, liveNow.wanted), color = Palette.text, fontSize = 14.sp)
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.limited_auto), Modifier.weight(1f), color = Palette.text, fontSize = 15.sp)
+                    Switch(checked = auto, onCheckedChange = { auto = it })
+                }
+                Text(stringResource(R.string.limited_auto_note), color = Palette.textSecondary, fontSize = 13.sp)
+                if (!auto) {
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        IconButton({ if (streams > 1) streams-- }) { Icon(Icons.Rounded.Remove, null, tint = Palette.text) }
+                        Text(stringResource(R.string.limited_n_streams, streams), fontFamily = Display, fontSize = 18.sp, color = Palette.text)
+                        IconButton({ if (streams < app.borderless.data.LimitedPower.MAX_STREAMS) streams++ }) { Icon(Icons.Rounded.Add, null, tint = Palette.text) }
+                    }
+                    Text(stringResource(R.string.limited_manual_note), color = Palette.textSecondary, fontSize = 13.sp)
+                }
+                val shownMax = serverMax ?: liveNow?.serverLimit
+                if (shownMax != null) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(stringResource(R.string.limited_server_limit, shownMax), color = Palette.textSecondary, fontSize = 13.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.limited_ignore_limit), Modifier.weight(1f), color = Palette.text, fontSize = 15.sp)
+                        Switch(checked = ignoreLimit, onCheckedChange = { ignoreLimit = it })
+                    }
+                    Text(stringResource(R.string.limited_ignore_limit_note), color = Palette.textSecondary, fontSize = 13.sp)
+                }
+                Spacer(Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = device, onValueChange = { device = it }, singleLine = true,
+                    label = { Text(stringResource(R.string.limited_device)) }, shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    // Empty: the id the app sends instead (the link's or its own), so it can be copied to another phone.
+                    supportingText = if (device.isBlank()) {
+                        { androidx.compose.foundation.text.selection.SelectionContainer { Text(stringResource(R.string.limited_device_now, app.borderless.core.Limited.deviceId(server.copy(limitedDevice = "")))) } }
+                    } else null,
+                )
+                Text(stringResource(R.string.limited_device_note), color = Palette.textSecondary, fontSize = 13.sp)
+            }
+        },
+        confirmButton = {
+            TextButton({
+                Repo.setLimitedOptions(server.id, if (auto) 0 else streams, device, ignoreLimit)
+                Limited.repace()
+                onDismiss()
+            }) { Text(stringResource(R.string.save)) }
+        },
+        dismissButton = { TextButton(onDismiss) { Text(stringResource(R.string.cancel)) } },
+    )
 }
 
 /**

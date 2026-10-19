@@ -7,13 +7,16 @@ import android.content.pm.PackageManager
 import app.borderless.data.Errors
 
 /**
- * The launcher icon follows the colour palette: each palette has an activity-alias with its own icon
- * (AndroidManifest), and exactly one of them is enabled. Applied only when the app goes to the
+ * The launcher icon follows the colour palette (the crane in its light accent on white, with the dark theme too):
+ * each palette has an activity-alias with its own icon (AndroidManifest), and exactly one of them is enabled. Applied only when the app goes to the
  * background: Android closes an open app whose launcher alias is switched. The launcher may re-add
  * the home-screen icon.
  */
 object AppIcon {
-    private val aliases = mapOf("coral" to ".ui.LauncherCoral", "mono" to ".ui.LauncherMono")
+    private val aliases = mapOf(
+        "coral" to ".ui.LauncherCoral", "powder" to ".ui.LauncherPowder",
+        "sage" to ".ui.LauncherSage", "lavender" to ".ui.LauncherLavender", "sky" to ".ui.LauncherSky", "mono" to ".ui.LauncherMono",
+    )
 
     fun apply(context: Context, palette: String) = Errors.guard("app icon", Unit, show = false) { switch(context, palette) }
 

@@ -61,18 +61,26 @@ import app.borderless.ui.theme.Palette
 fun ShareSheet(title: String, bundle: ShareFormat.Bundle, allowKeep: Boolean, onDismiss: () -> Unit) {
     val context = LocalContext.current
     var keep by remember { mutableStateOf(false) }
+    var device by remember { mutableStateOf(false) }
     var qr by remember { mutableStateOf(false) }
-    val text = remember(bundle, keep) { if (keep) ShareFormat.encode(bundle) else ShareFormat.plain(bundle) }
+    val limited = remember(bundle) { app.borderless.core.Limited.hasLimited(bundle) }
+    val text = remember(bundle, keep, device) {
+        val b = if (device) app.borderless.core.Limited.withDeviceIds(bundle) else bundle
+        if (keep) ShareFormat.encode(b) else ShareFormat.plain(b)
+    }
     // The screen lock first, if the user wants it (SECURITY.md S13); nothing is shown until then.
     var unlocked by remember { mutableStateOf(false) }
     val unlock = app.borderless.ui.rememberUnlock()
     androidx.compose.runtime.LaunchedEffect(Unit) { unlock({ unlocked = true }, onDismiss) }
     if (!unlocked) return
 
-    // Links and the QR code carry the servers' keys: kept out of screenshots, recordings and the recents preview.
+    // Links carry the servers' keys: kept out of screenshots, recordings and the recents preview. The QR code is
+    // meant to be passed on, often as a screenshot, so the sheet drops the flag while it is shown (owner, 2026-10-17).
     ModalBottomSheet(
         onDismissRequest = onDismiss, containerColor = Palette.background,
-        properties = androidx.compose.material3.ModalBottomSheetProperties(securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn),
+        properties = androidx.compose.material3.ModalBottomSheetProperties(
+            securePolicy = if (qr) androidx.compose.ui.window.SecureFlagPolicy.SecureOff else androidx.compose.ui.window.SecureFlagPolicy.SecureOn,
+        ),
     ) {
         Column(Modifier.padding(horizontal = 20.dp).navigationBarsPadding()) {
             Text(stringResource(R.string.share), fontSize = 21.sp, fontWeight = FontWeight.Bold, fontFamily = Display, color = Palette.text)
@@ -89,22 +97,11 @@ fun ShareSheet(title: String, bundle: ShareFormat.Bundle, allowKeep: Boolean, on
             )
             if (allowKeep) {
                 Spacer(Modifier.height(12.dp))
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Palette.card).clickable { keep = !keep }.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(stringResource(R.string.share_keep), fontSize = 16.sp, color = Palette.text)
-                        Text(
-                            stringResource(if (keep) R.string.share_keep_sub else R.string.share_plain_sub),
-                            fontSize = 13.sp, color = Palette.textSecondary, modifier = Modifier.padding(top = 2.dp),
-                        )
-                    }
-                    Switch(
-                        checked = keep, onCheckedChange = { keep = it },
-                        colors = SwitchDefaults.colors(checkedTrackColor = Palette.accent, uncheckedTrackColor = Palette.cardStrong, uncheckedBorderColor = Palette.outline, uncheckedThumbColor = Palette.textMuted),
-                    )
-                }
+                SwitchRow(stringResource(R.string.share_keep), stringResource(if (keep) R.string.share_keep_sub else R.string.share_plain_sub), keep) { keep = it }
+            }
+            if (limited) {
+                Spacer(Modifier.height(if (allowKeep) 8.dp else 12.dp))
+                SwitchRow(stringResource(R.string.share_device), stringResource(if (device) R.string.share_device_on else R.string.share_device_off), device) { device = it }
             }
             Spacer(Modifier.height(10.dp))
             if (text.isBlank()) {
@@ -153,5 +150,22 @@ private fun Action(icon: ImageVector, label: String, onClick: () -> Unit) {
         Icon(icon, null, tint = Palette.textSecondary, modifier = Modifier.size(22.dp))
         Spacer(Modifier.width(14.dp))
         Text(label, fontSize = 16.sp, color = Palette.text)
+    }
+}
+
+@Composable
+private fun SwitchRow(title: String, sub: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Palette.card).clickable { onChange(!checked) }.padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 16.sp, color = Palette.text)
+            Text(sub, fontSize = 13.sp, color = Palette.textSecondary, modifier = Modifier.padding(top = 2.dp))
+        }
+        Switch(
+            checked = checked, onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(checkedTrackColor = Palette.accent, uncheckedTrackColor = Palette.cardStrong, uncheckedBorderColor = Palette.outline, uncheckedThumbColor = Palette.textMuted),
+        )
     }
 }

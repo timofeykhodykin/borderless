@@ -52,11 +52,15 @@ import androidx.compose.material.icons.rounded.AutoMode
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DragIndicator
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.CellTower
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import app.borderless.ui.AppAlertDialog
+import app.borderless.ui.CountryDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -141,7 +145,7 @@ fun GroupsScreen(onBack: () -> Unit, onSubStats: (String) -> Unit = {}, onServer
     val autoState by Repo.auto.collectAsStateWithLifecycle()
     // Auto-visibility: the pool decides what is active; the user's own flags wait until it is off.
     val autoActive = settings.autoActive
-    val isActive: (Server) -> Boolean = { if (autoActive) it.id in autoState.pool else !it.disabled }
+    val isActive: (Server) -> Boolean = { if (autoActive && !it.limited) it.id in autoState.pool else !it.disabled }
     // Auto-sort only changes what is shown: the user's order stays saved and comes back when it is off.
     val auto = settings.autoSort
     val rank = remember(plan) { plan.withIndex().associate { (i, id) -> id to i + 1 } }
@@ -221,7 +225,7 @@ fun GroupsScreen(onBack: () -> Unit, onSubStats: (String) -> Unit = {}, onServer
     }) {
         LazyColumn(state = listState, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
             if (autoActive) item(key = "autoActive") {
-                Hint(stringResource(R.string.auto_active_hint, servers.count { it.id in autoState.pool }, servers.size))
+                Hint(stringResource(R.string.auto_active_hint, servers.count(isActive), servers.size))
             }
             if (auto) item(key = "auto") { Hint(stringResource(R.string.auto_sort_hint)) }
             items(rows, key = { it.key }) { row ->
@@ -544,6 +548,10 @@ private fun ReorderableCollectionItemScope.MemberRow(
     // Subscription servers can be reordered but move between groups only with their subscription.
     val movable = server.subscriptionId == null
     val off = !active
+    var limitedOptions by remember { mutableStateOf(false) }
+    var askCountry by remember { mutableStateOf(false) }
+    if (limitedOptions) app.borderless.ui.main.LimitedOptionsDialog(server) { limitedOptions = false }
+    if (askCountry) CountryDialog(server) { askCountry = false }
     val shape: Shape = when {
         dragging -> RoundedCornerShape(14.dp)
         row.last -> BottomShape
@@ -580,7 +588,14 @@ private fun ReorderableCollectionItemScope.MemberRow(
                     Repo.displayName(server), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.text,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable(onClick = onRename),
                 )
-                Text(server.protocol, fontSize = 12.sp, color = Palette.textSecondary, maxLines = 1)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Limited-network servers are marked so they stand out in the common list.
+                    if (server.limited) {
+                        Icon(Icons.Rounded.CellTower, null, tint = app.borderless.ui.theme.StateColors.limited.strong, modifier = Modifier.size(13.dp))
+                        Spacer(Modifier.width(2.dp))
+                    }
+                    Text(server.protocol, fontSize = 12.sp, color = Palette.textSecondary, maxLines = 1)
+                }
             }
         }
         // Auto-sorted: no drag handle; the scan position sits before the menu, which goes to the right edge.
@@ -589,8 +604,8 @@ private fun ReorderableCollectionItemScope.MemberRow(
         }
         RowMenu(
             listOfNotNull(
-                // With auto-visibility on the pool decides; the user's own choice waits until it is off.
-                if (!autoActive) MenuAction(
+                // With auto-visibility on the pool decides (ordinary servers only); the user's own choice waits until it is off.
+                if (!autoActive || server.limited) MenuAction(
                     if (off) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
                     stringResource(if (off) R.string.action_enable else R.string.action_disable),
                 ) {
@@ -598,7 +613,13 @@ private fun ReorderableCollectionItemScope.MemberRow(
                     if (!off) TunnelService.send(Engine.Event.Disabled(server.id))
                 } else null,
                 MenuAction(Icons.Rounded.Insights, stringResource(R.string.action_stats), onClick = onStats),
+                // Limited-network servers are often hidden from the main screen (the pool decides), so their power control
+                // lives in this menu too.
+                if (server.limited) MenuAction(Icons.Rounded.Bolt, stringResource(R.string.action_limited_power)) { limitedOptions = true } else null,
                 MenuAction(Icons.Rounded.Edit, stringResource(R.string.action_rename), onClick = onRename),
+                // The same as in the server sheet on the main screen: the flag, the country statistics and the
+                // country filter all follow it.
+                MenuAction(Icons.Rounded.Flag, stringResource(R.string.action_country)) { askCountry = true },
                 MenuAction(Icons.Rounded.Share, stringResource(R.string.share), onClick = onShare),
                 if (movable && groups.isNotEmpty()) MenuAction(
                     Icons.AutoMirrored.Rounded.DriveFileMove, stringResource(R.string.action_move_group),

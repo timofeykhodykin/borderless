@@ -143,7 +143,9 @@ object Repo {
     fun isActive(s: Server, settings: AppSettings = _settings.value, auto: AutoState = _auto.value): Boolean = when {
         settings.avoidInsecure && Insecurity.of(s).isNotEmpty() -> false
         settings.countries.isNotEmpty() -> Countries.of(s) in settings.countries && !s.disabled
-        settings.autoActive -> s.id in auto.pool
+        // The pool manages ordinary servers only; limited-network servers stay as the user shows them (else none would
+        // ever be active with auto-visibility on and the engine could never fall back to them).
+        settings.autoActive -> if (s.limited) !s.disabled else s.id in auto.pool
         else -> !s.disabled
     }
 
@@ -151,6 +153,16 @@ object Repo {
 
     /** Servers that take part in pinging and selection. */
     val activeServers: List<Server> get() = _servers.value.filter { isActive(it) }
+
+    /**
+     * Active servers reached directly (not limited-network ones through the core): the ones ordinary scans probe and the
+     * engine prefers. Limited-network servers ([Server.limited]) are kept out of scans (each needs its core running) and
+     * chosen only as a last resort (`core/Limited.kt`, `core/Engine.kt`).
+     */
+    val activeOrdinary: List<Server> get() = _servers.value.filter { isActive(it) && !it.limited }
+
+    /** Active limited-network servers, best (by recent success) first. */
+    val limitedServers: List<Server> get() = _servers.value.filter { isActive(it) && it.limited }
 
     fun updateAuto(f: (AutoState) -> AutoState) {
         _auto.update(f)
@@ -162,9 +174,15 @@ object Repo {
 
     /** Sets the user's name for a server; blank brings back the name from the link. */
     fun renameServer(id: String, name: String) {
+        val before = server(id) ?: return
         val n = name.trim().takeIf { it.isNotEmpty() }
         _servers.update { list -> list.map { if (it.id == id) it.copy(customName = n?.takeIf { v -> v != Countries.stripFlag(it.name) }) else it } }
         saveServers()
+        // The log keeps the whole story of a server: what it was called and what it became.
+        val after = server(id) ?: return
+        val was = realName(before)
+        val now = realName(after)
+        if (was != now) AppLog.event(LText.of(R.string.ev_server_renamed, was, now))
     }
 
     private class NameCache(val servers: List<Server>, val groups: List<Group>, val subs: List<Subscription>, val names: Map<String, String>)
@@ -195,9 +213,33 @@ object Repo {
         return cache.names[s.id] ?: realName(s)
     }
 
+    /** Limited-network servers: streams (0 = automatic), the device id sent to the server (empty = default), and whether to ignore its stream limit. */
+    fun setLimitedOptions(id: String, streams: Int, device: String, ignoreLimit: Boolean = false) {
+        val before = server(id) ?: return
+        _servers.update { list -> list.map { if (it.id == id) it.copy(limitedStreams = streams.coerceIn(0, LimitedPower.MAX_STREAMS), limitedDevice = device.trim(), limitedIgnoreLimit = ignoreLimit) else it } }
+        saveServers()
+        val after = server(id) ?: return
+        val streamsText = if (after.limitedStreams == 0) LText.of(R.string.limited_auto) else LText.of(R.string.limited_n_streams, after.limitedStreams)
+        if (before.limitedStreams != after.limitedStreams || before.limitedIgnoreLimit != after.limitedIgnoreLimit) {
+            AppLog.event(LText.concat(
+                LText.of(R.string.ev_server_power, realName(after), streamsText),
+                if (after.limitedIgnoreLimit) LText.of(R.string.ev_server_power_ignore) else "",
+            ))
+        }
+        if (before.limitedDevice != after.limitedDevice) {
+            // The id itself is a credential-like value: only whether it is set, not what it is.
+            AppLog.debug(TAG, "server power: ${realName(after)}, device id ${if (after.limitedDevice.isEmpty()) "cleared" else "set"}")
+        }
+    }
+
     fun setServerDisabled(id: String, disabled: Boolean) {
+        val before = server(id) ?: return
         _servers.update { list -> list.map { if (it.id == id) it.copy(disabled = disabled) else it } }
         saveServers()
+        if (before.disabled != disabled) {
+            val after = server(id) ?: return
+            AppLog.event(LText.of(if (disabled) R.string.ev_server_hidden else R.string.ev_server_shown, realName(after)))
+        }
     }
 
     /** Parses links into servers. Invalid links are reported in the second list. */
@@ -234,11 +276,16 @@ object Repo {
     }
 
     fun addServers(list: List<Server>) {
+        var added = 0
         _servers.update { old ->
             val ids = old.map { it.id }.toHashSet()
-            old + list.filter { it.id !in ids }
+            val fresh = list.filter { it.id !in ids }
+            added = fresh.size
+            old + fresh
         }
         saveServers()
+        // The import already logs its own event (with counts): here the detailed log gets what exactly came in.
+        if (added > 0) AppLog.debug(TAG, "added $added server(s): " + list.take(10).joinToString { "${it.protocol} · ${it.name}" } + if (list.size > 10) " …" else "")
     }
 
     /** Replaces a subscription's servers, keeping manual country overrides. */
@@ -254,9 +301,9 @@ object Repo {
                 when {
                     p == null -> s
                     // The name from when it was added stays: a refresh never renames a known server.
-                    p.countryManual -> s.copy(name = p.name, country = p.country, countryManual = true, addedAt = p.addedAt, disabled = p.disabled, customName = p.customName)
-                    s.country == null -> s.copy(name = p.name, country = p.country, addedAt = p.addedAt, disabled = p.disabled, customName = p.customName)
-                    else -> s.copy(name = p.name, addedAt = p.addedAt, disabled = p.disabled, customName = p.customName)
+                    p.countryManual -> s.copy(name = p.name, country = p.country, countryManual = true, addedAt = p.addedAt, disabled = p.disabled, customName = p.customName, limitedStreams = p.limitedStreams, limitedDevice = p.limitedDevice, limitedIgnoreLimit = p.limitedIgnoreLimit)
+                    s.country == null -> s.copy(name = p.name, country = p.country, addedAt = p.addedAt, disabled = p.disabled, customName = p.customName, limitedStreams = p.limitedStreams, limitedDevice = p.limitedDevice, limitedIgnoreLimit = p.limitedIgnoreLimit)
+                    else -> s.copy(name = p.name, addedAt = p.addedAt, disabled = p.disabled, customName = p.customName, limitedStreams = p.limitedStreams, limitedDevice = p.limitedDevice, limitedIgnoreLimit = p.limitedIgnoreLimit)
                 }
             }
             // Keep the order the user arranged; new servers go to the end of the group.
@@ -272,14 +319,22 @@ object Repo {
     }
 
     fun removeServer(id: String) {
+        val gone = server(id)
         _servers.update { list -> list.filterNot { it.id == id } }
         saveServers()
         prunePings()
+        if (gone != null) AppLog.event(LText.of(R.string.ev_server_removed, realName(gone), gone.protocol), AppLog.Kind.WARN)
     }
 
     fun setCountry(id: String, code: String?, manual: Boolean) {
+        val before = server(id) ?: return
         _servers.update { list -> list.map { if (it.id == id) it.copy(country = code, countryManual = manual) else it } }
         saveServers()
+        val after = server(id) ?: return
+        if (before.country != after.country || before.countryManual != after.countryManual) {
+            val label = if (after.country == null) LText.of(R.string.country_auto) else LText.raw(Countries.name(after.country))
+            AppLog.event(LText.of(R.string.ev_server_country, realName(after), label))
+        }
     }
 
     fun setCountries(codes: Map<String, String>) {
@@ -288,6 +343,8 @@ object Repo {
             list.map { s -> codes[s.id]?.takeIf { !s.countryManual }?.let { s.copy(country = it) } ?: s }
         }
         saveServers()
+        // Detected countries (by the servers' names or through a server): how many, not which ones (the log names servers anyway).
+        AppLog.debug(TAG, "countries detected for ${codes.size} server(s)")
     }
 
     // ------------------------------------------------------------------ subscriptions
@@ -299,20 +356,29 @@ object Repo {
 
     /** Sets the user's name for a subscription; blank brings back the provider's title. */
     fun renameSubscription(id: String, name: String) {
+        val before = subscription(id) ?: return
         val n = name.trim().takeIf { it.isNotEmpty() }
         _subscriptions.update { list -> list.map { if (it.id == id) it.copy(customName = n?.takeIf { v -> v != it.name }) else it } }
         write("subscriptions.json", subsSer) { _subscriptions.value }
+        val after = subscription(id) ?: return
+        val was = subName(before)
+        val now = subName(after)
+        if (was != now) AppLog.event(LText.of(R.string.ev_sub_renamed, was, now))
     }
 
     fun upsertSubscription(sub: Subscription) {
+        val fresh = subscription(sub.id) == null
         _subscriptions.update { list ->
             if (list.any { it.id == sub.id }) list.map { if (it.id == sub.id) sub else it } else list + sub
         }
         write("subscriptions.json", subsSer) { _subscriptions.value }
+        if (fresh) AppLog.event(LText.of(R.string.ev_sub_added, subName(sub)))
+        else AppLog.debug(TAG, "subscription updated: ${subName(sub)} (${sub.name})")
     }
 
     fun removeSubscription(id: String) {
-        val groupId = subscription(id)?.groupId
+        val gone = subscription(id)
+        val groupId = gone?.groupId
         _subscriptions.update { list -> list.filterNot { it.id == id } }
         _servers.update { list -> list.filterNot { it.subscriptionId == id } }
         // A group that was created just for this subscription goes away with it.
@@ -326,6 +392,7 @@ object Repo {
         saveGroups()
         saveServers()
         prunePings()
+        if (gone != null) AppLog.event(LText.of(R.string.ev_sub_removed, subName(gone)), AppLog.Kind.WARN)
     }
 
     // ------------------------------------------------------------------ groups
@@ -393,13 +460,17 @@ object Repo {
         val g = Group("g-" + java.util.UUID.randomUUID().toString().take(8), name.trim())
         _groups.update { it + g }
         saveGroups()
+        AppLog.event(LText.of(R.string.ev_group_added, groupName(g)))
         return g
     }
 
     fun renameGroup(id: String, name: String) {
         if (id == Group.DEFAULT_ID) return // the default group keeps its name
+        val before = groupName(group(id))
         _groups.update { list -> list.map { if (it.id == id) it.copy(name = name.trim().ifEmpty { null }) else it } }
         saveGroups()
+        val after = groupName(group(id))
+        if (before != after) AppLog.event(LText.of(R.string.ev_group_renamed, before, after))
     }
 
     /** Deletes a group; its servers and subscriptions move to the default group. */
@@ -412,6 +483,7 @@ object Repo {
         write("subscriptions.json", subsSer) { _subscriptions.value }
         saveServers()
         saveGroups()
+        AppLog.event(LText.of(R.string.ev_group_removed, groupName(g), groupName(group(Group.DEFAULT_ID))), AppLog.Kind.WARN)
     }
 
     /** Drag and drop: puts group [id] where group [targetId] is. */
@@ -475,6 +547,7 @@ object Repo {
         }
         write("subscriptions.json", subsSer) { _subscriptions.value }
         saveServers()
+        AppLog.event(LText.of(R.string.ev_sub_moved, subName(sub), groupName(group(groupId))))
         saveGroups()
     }
 
@@ -498,12 +571,16 @@ object Repo {
 
     /** Only servers added by hand can change group: subscription servers follow their subscription. */
     fun setServerGroup(id: String, groupId: String) {
+        var moved: Server? = null
         _servers.update { list ->
             val srv = list.firstOrNull { it.id == id && it.subscriptionId == null } ?: return@update list
+            if (groupOf(srv) == groupId) return@update list
+            moved = srv
             // Append at the end of the target group.
             list.filterNot { it.id == id } + srv.copy(groupId = groupId)
         }
         saveServers()
+        moved?.let { AppLog.event(LText.of(R.string.ev_server_moved, realName(it), groupName(group(groupId)))) }
     }
 
     private fun saveGroups() = write("groups.json", groupsSer) { _groups.value }
@@ -515,22 +592,28 @@ object Repo {
     /** Adds [z] (switched on) or replaces the zone with its id. Its `.dat` files no entry names any more go. */
     fun saveZone(z: CustomZone, enable: Boolean = false) {
         val used = (z.direct + z.server).filter { it.startsWith("ext:") }.map { it.removePrefix("ext:").substringBefore(':') }.toSet()
+        val fresh = _zones.value.none { it.id == z.id }
         zoneFiles(z.id).filter { it.name !in used }.forEach { it.delete() }
         _zones.update { list -> if (list.any { it.id == z.id }) list.map { if (it.id == z.id) z else it } else list + z }
         Regions.custom = _zones.value.map(CustomZone::toRegion)
         write("zones.json", zonesSer) { _zones.value }
         if (enable) updateSettings { it.copy(regions = it.regions + z.id) }
+        // What the zone does to traffic: counts, not the entries themselves (the files hold those).
+        AppLog.debug(TAG, "zone ${z.name} ${if (fresh) "created" else "saved"}: ${z.direct.size} direct, ${z.server.size} via servers, " +
+            "${z.apps.size} app(s), on: ${enable || z.id in _settings.value.regions}")
     }
 
     /** The `.dat` files kept for a zone (DatFile), in the folder the core reads lists from. */
     fun zoneFiles(id: String): List<File> = GeoFile.dir?.listFiles { f -> f.name.startsWith("$id-") && f.name.endsWith(".dat") }?.toList().orEmpty()
 
     fun deleteZone(id: String) {
+        val gone = zone(id)
         zoneFiles(id).forEach { it.delete() }
         _zones.update { list -> list.filterNot { it.id == id } }
         Regions.custom = _zones.value.map(CustomZone::toRegion)
         write("zones.json", zonesSer) { _zones.value }
         updateSettings { it.copy(regions = it.regions - id) }
+        AppLog.debug(TAG, "zone ${gone?.name ?: id} deleted")
     }
 
     // ------------------------------------------------------------------ sharing
@@ -573,6 +656,8 @@ object Repo {
         val set = keys.toSet()
         _servers.update { list -> list.map { if (it.subscriptionId == subId && ShareFormat.key(it.link) in set) it.copy(disabled = true) else it } }
         saveServers()
+        // An import carried the hidden servers of another phone: the user should find why some are hidden here.
+        AppLog.debug(TAG, "import: ${set.size} server(s) of subscription ${subscription(subId)?.let(::subName) ?: subId} hidden")
     }
 
     // ------------------------------------------------------------------ pings

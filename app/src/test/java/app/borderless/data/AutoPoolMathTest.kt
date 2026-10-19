@@ -19,7 +19,7 @@ class AutoPoolMathTest {
     @Test
     fun recentDayWeighsMoreThanTheWeek() {
         // Dead today, fine over the week: chance clearly below the weekly figure.
-        val st = StatsDb.PoolStat(shortCount = 20, shortOk = 0, longCount = 200, longOk = 180, avgMs = 100.0, lastOk = now - 30 * hour)
+        val st = StatsDb.PoolStat(shortCount = 20.0, shortOk = 0.0, longCount = 200.0, longOk = 180.0, avgMs = 100.0, lastOk = now - 30 * hour)
         val e = AutoPoolMath.estimate(st, now)
         assertTrue(e.p < 0.5)
     }

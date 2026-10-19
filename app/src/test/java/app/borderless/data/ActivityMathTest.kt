@@ -63,6 +63,59 @@ class ActivityMathTest {
     }
 
     @Test
+    fun energySharesMergeKindsAndFoldSmallParts() {
+        fun t(k: String, mj: Long) = k to StatsDb.ActivityTotal(k, 1, 0, 0, 0, mj)
+        val shares = ActivityMath.energyShares(
+            mapOf(
+                t("PING_RIDE", 300), t("PING_STALL", 100), t("NET_CHECK", 100), // one line: watching the connection
+                t("CORE_BASE", 480), t("CORE_START", 5),
+                t("DB_COMMIT", 5), t("LOG_WRITE", 2), t("SUB_UPDATE", 8), // two parts under 1% → "other"
+            )
+        )
+        assertEquals(listOf(ActivityMath.Part.CONNECTION, ActivityMath.Part.TRAFFIC, ActivityMath.Part.OTHER), shares.map { it.part })
+        assertEquals(listOf(500L, 485L, 15L), shares.map { it.mj })
+        assertEquals(1.0, shares.sumOf { it.share }, 1e-9)
+        // A single small part keeps its own name.
+        val one = ActivityMath.energyShares(mapOf(t("CORE_BASE", 995), t("SUB_UPDATE", 5)))
+        assertEquals(listOf(ActivityMath.Part.TRAFFIC, ActivityMath.Part.SUBSCRIPTIONS), one.map { it.part })
+    }
+
+    @Test
+    fun energyIsSpreadOverTheStretchItCovers() {
+        val min = 60_000L
+        val flushes = listOf(
+            ActivityMath.Flush(10 * min, mapOf(Activity.Kind.PING_RIDE to 100L)),
+            // Five minutes later: 600 mJ spread over minutes 10..15.
+            ActivityMath.Flush(15 * min, mapOf(Activity.Kind.SCAN_BACKGROUND to 500L, Activity.Kind.CORE_BASE to 100L)),
+            // After an hour's silence the app wasn't running: only the last 15 minutes count.
+            ActivityMath.Flush(80 * min, mapOf(Activity.Kind.CORE_BASE to 300L)),
+        )
+        // Buckets of 10 minutes over 0..90.
+        val b = ActivityMath.energyOverTime(flushes, 0, 90 * min, 9)
+        // 0..10: the first write's 5 minutes (5..10); 10..20: 5 minutes; 60..70 and 70..80: the last stretch (65..80).
+        assertEquals(listOf(5 * min, 5 * min, 5 * min, 10 * min), b.map { it.coveredMs })
+        assertEquals(100.0, b[0].total, 1e-9)
+        assertEquals(500.0, b[1].mj[ActivityMath.Part.FASTER]!!, 1e-9)
+        assertEquals(100.0, b[1].mj[ActivityMath.Part.TRAFFIC]!!, 1e-9)
+        assertEquals(100.0, b[2].total, 1e-9)
+        assertEquals(200.0, b[3].total, 1e-9)
+        // Nothing is lost or made up.
+        assertEquals(1000.0, b.sumOf { it.total }, 1e-9)
+    }
+
+    @Test
+    fun everyKindHasOnePart() {
+        Activity.Kind.entries.forEach { k ->
+            assertEquals(k.name, 1, ActivityMath.Part.entries.count { k in it.kinds })
+        }
+        // Bookkeeping and continuous costs are not shown as actions.
+        assertEquals(false, ActivityMath.isAction(Activity.Kind.DB_COMMIT))
+        assertEquals(false, ActivityMath.isAction(Activity.Kind.CORE_BASE))
+        assertEquals(false, ActivityMath.isAction(Activity.Kind.LIMITED_START))
+        assertEquals(true, ActivityMath.isAction(Activity.Kind.PING_PERIODIC))
+    }
+
+    @Test
     fun radioTimeIsNotCountedTwice() {
         // A ping 2 s after another one on mobile data adds only 2 s of radio, not another 10 s tail.
         assertEquals(10_500L, Energy.radioAdded(onUntil = 0, start = 0, end = 500, tail = 10_000))

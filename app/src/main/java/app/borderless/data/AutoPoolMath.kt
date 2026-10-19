@@ -24,7 +24,7 @@ object AutoPoolMath {
      * samples don't decide; score = chance × speed (½ at 400 ms) × a bonus for answering in the last hour.
      */
     fun estimate(st: StatsDb.PoolStat?, now: Long): Estimate {
-        if (st == null || st.longCount == 0) return Estimate(UNKNOWN_P, UNKNOWN_P * 0.5)
+        if (st == null || st.longCount == 0.0) return Estimate(UNKNOWN_P, UNKNOWN_P * 0.5)
         val pLong = (st.longOk + 1.0) / (st.longCount + 2.0)
         val p = if (st.shortCount >= 3) 0.6 * (st.shortOk + 1.0) / (st.shortCount + 2.0) + 0.4 * pLong else pLong
         val speed = 1.0 / (1.0 + (st.avgMs ?: 2000.0) / 400.0)

@@ -19,6 +19,10 @@ object SettingsLog {
         app.borderless.core.Eco.KEY to s.ecoOn.toString(),
         "ecoWithSaver" to s.ecoWithSaver.toString(),
         "ecoStrategy" to s.ecoStrategy.toString(),
+        // The strategy the mode took over (it comes back when the mode ends) and who turned it on.
+        "strategyBeforeEco" to (s.strategyBeforeEco?.name ?: "-"),
+        "ecoBySaver" to s.ecoBySaver.toString(),
+        "saverSeen" to s.saverSeen.toString(),
         "defaultStrategy" to s.defaultStrategy.name,
         "autoActive" to s.autoActive.toString(),
         "routingEnabled" to s.routingEnabled.toString(),
@@ -48,6 +52,30 @@ object SettingsLog {
         "ipv6" to s.ipv6.toString(),
         "subUpdateHours" to s.subUpdateHours.toString(),
         "pingAllSwitches" to s.pingAllSwitches.toString(),
+        "autoSort" to s.autoSort.toString(),
+        "genericNames" to s.genericNames.toString(),
+        "customOverGeneric" to s.customOverGeneric.toString(),
+        "countrySort" to s.countrySort.name,
+        // Null means the switch of older versions decides (see AppSettings.notify).
+        "notifyMode" to (s.notifyMode?.name ?: "auto"),
+        "limitedAuto" to s.limitedAuto.toString(),
+        "geoUpdateDays" to s.geoUpdateDays.toString(),
+        "probeConcurrency" to s.probeConcurrency.toString(),
+        "mtu" to s.mtu.toString(),
+        "remoteDns" to s.remoteDns,
+        "directDns" to s.directDns,
+        "userAgent" to s.userAgent,
+        "testUrl" to s.testUrl,
+        "statsDays" to s.statsDays.toString(),
+        // Domain zones (their codes) and how many apps / domains go each way: the lists themselves can be long
+        // (hundreds of package names), and every change of them is visible by these counts.
+        "regions" to s.regions.sorted().joinToString(","),
+        "appsDirect" to s.appsDirect.size.toString(),
+        "appsTunnel" to s.appsTunnel.size.toString(),
+        "domainsDirect" to s.directDomains.size.toString(),
+        "domainsProxy" to s.proxyDomains.size.toString(),
+        // Palette and light / dark / following the system (the dark schemes draw less on OLED screens).
+        "theme" to s.palette + "/" + if (s.themeFollowsSystem) "system" else if (s.darkTheme) "dark" else "light",
         // Servers of these countries only (codes, "-" = unknown country, comma-separated); empty = any.
         "country" to s.countries.sorted().joinToString(","),
     )

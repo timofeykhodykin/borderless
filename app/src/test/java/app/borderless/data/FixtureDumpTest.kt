@@ -21,6 +21,10 @@ class FixtureDumpTest {
                 "VLESS · Reality", "a.example", 443, groupId = "own", country = "DE", addedAt = 1759700000000, customName = "Work"),
             Server("s2", "Sub server", "trojan://pw@b.example:443?security=tls&sni=x.com&type=ws&path=%2F#Sub", "Trojan · WS TLS", "b.example", 443,
                 subscriptionId = "sub1", groupId = "g1", country = "NL", countryManual = true, disabled = true, addedAt = 1759700000001),
+            // 3.0.0: WDTT links and their own settings (streams, device id, the server's limit).
+            Server("s3", "WDTT reserve", "wdtt://203.0.113.7:56000:56001:9000:examplePass0001:exampleCallIdentifier#WDTT reserve",
+                "WDTT · WireGuard", "203.0.113.7", 56000, groupId = "own", country = "NL", addedAt = 1759700000002,
+                limitedStreams = 3, limitedDevice = "exampledevice0001", limitedIgnoreLimit = true),
         )
         File(out, "servers.json").writeText(json.encodeToString(ListSerializer(Server.serializer()), servers))
         File(out, "subscriptions.json").writeText(json.encodeToString(ListSerializer(Subscription.serializer()), listOf(
@@ -41,6 +45,8 @@ class FixtureDumpTest {
             notifyMode = NotifyMode.ALWAYS, noServerAction = NoServerAction.PAUSE, avoidInsecure = true, sendDeviceModel = true,
             confirmShare = true, carefulScans = true, pingAllSwitches = false, verboseLog = true, verboseSince = 1759700000000,
             regions = setOf("ru", "u-example"), manualServerId = "s1",
+            // 3.0.0
+            limitedAuto = false,
         )))
         File(out, "zones.json").writeText(json.encodeToString(ListSerializer(CustomZone.serializer()), listOf(
             CustomZone("u-example", "Example", direct = listOf("domain:a.example", "10.1.0.0/16"), server = listOf("full:b.example"),

@@ -95,6 +95,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
@@ -121,6 +122,7 @@ import app.borderless.data.Subscription
 import app.borderless.ui.theme.Display
 import app.borderless.ui.theme.Body
 import app.borderless.ui.theme.Palette
+import app.borderless.ui.theme.StateColors
 import kotlinx.coroutines.delay
 
 /** Everything the main screen shows, gathered by the caller from the repositories. */
@@ -192,7 +194,7 @@ fun MainScreen(state: MainState, actions: MainActions) {
                     item {
                         Heatmap(
                             grouped, state.pings, state.pending, state.probing, spin,
-                            currentId = state.status.serverId.takeIf { state.status.active },
+                            currentId = state.status.chosenId.takeIf { state.status.active },
                             peekId = peek,
                             onCell = { s -> peek = if (peek == s.id) null else s.id },
                             onCellLongClick = actions.onServerLongClick,
@@ -202,7 +204,7 @@ fun MainScreen(state: MainState, actions: MainActions) {
                                     server = server,
                                     ping = state.pings[server.id],
                                     group = groupNames[Repo.groupOf(server)],
-                                    current = state.status.active && server.id == state.status.serverId,
+                                    current = state.status.active && server.id == state.status.chosenId,
                                     pending = server.id in state.pending,
                                     probing = server.id in state.probing,
                                     spin = spin,
@@ -225,7 +227,7 @@ fun MainScreen(state: MainState, actions: MainActions) {
                             server = server,
                             ping = state.pings[server.id],
                             group = groupNames[Repo.groupOf(server)],
-                            current = state.status.active && server.id == state.status.serverId,
+                            current = state.status.active && server.id == state.status.chosenId,
                             pending = server.id in state.pending,
                             probing = server.id in state.probing,
                             spin = spin,
@@ -262,7 +264,7 @@ fun MainScreen(state: MainState, actions: MainActions) {
 private fun CountryButton(countries: Set<String>, onClick: () -> Unit) {
     val on = countries.isNotEmpty()
     val bg by animateColorAsState(if (on) Palette.accent else Palette.card, label = "country")
-    val fg by animateColorAsState(if (on) Color.White else Palette.textSecondary, label = "countryFg")
+    val fg by animateColorAsState(if (on) Palette.onAccent else Palette.textSecondary, label = "countryFg")
     Row(
         Modifier
             .height(56.dp)
@@ -388,7 +390,7 @@ private fun CountryEmptyHint(countries: Set<String>, onClick: () -> Unit) {
 @Composable
 private fun EcoButton(on: Boolean, saving: Int?, onClick: () -> Unit, onLongClick: () -> Unit, modifier: Modifier) {
     val bg by animateColorAsState(if (on) Palette.accent else Palette.card, label = "eco")
-    val fg by animateColorAsState(if (on) Color.White else Palette.textSecondary, label = "ecoFg")
+    val fg by animateColorAsState(if (on) Palette.onAccent else Palette.textSecondary, label = "ecoFg")
     Row(
         modifier
             .height(56.dp)
@@ -596,9 +598,13 @@ private fun ConnectBlock(state: MainState, actions: MainActions) {
         )
         Spacer(Modifier.height(6.dp))
         val (title, subtitle) = statusText(state)
+        // A Manual pick that isn't in use at the moment (a limited-network server whose core can't start) keeps the
+        // flag and the group: the choice stays visible while the engine retries it.
+        val chosen = state.servers.firstOrNull { it.id == status.chosenId }
+        val keptPick = status.selectedId != null && (status.phase == Phase.DIRECT || status.phase == Phase.PAUSED)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            if (status.phase == Phase.CONNECTED) {
-                FlagIcon(state.servers.firstOrNull { it.id == status.serverId }?.country, 18.dp)
+            if (status.phase == Phase.CONNECTED || keptPick) {
+                FlagIcon(chosen?.country, 18.dp)
                 Spacer(Modifier.width(10.dp))
             }
             Text(title, fontSize = 19.sp, fontWeight = FontWeight.Bold, fontFamily = Display, color = Palette.text, textAlign = TextAlign.Center)
@@ -609,10 +615,9 @@ private fun ConnectBlock(state: MainState, actions: MainActions) {
             maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 24.dp),
         )
         // The current server's group and protocol, like in the server list.
-        val server = state.servers.firstOrNull { it.id == status.serverId }
-        if (server != null && (status.phase == Phase.CONNECTED || status.phase == Phase.SEARCHING) && state.scan == null) {
+        if (chosen != null && (status.phase == Phase.CONNECTED || status.phase == Phase.SEARCHING || keptPick) && state.scan == null) {
             Text(
-                listOfNotNull(Repo.groupName(Repo.group(Repo.groupOf(server))), server.protocol).joinToString(" · "),
+                listOfNotNull(Repo.groupName(Repo.group(Repo.groupOf(chosen))), chosen.protocol).joinToString(" · "),
                 fontSize = 12.sp, color = Palette.textMuted, textAlign = TextAlign.Center,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 24.dp, vertical = 1.dp),
             )
@@ -669,7 +674,7 @@ private fun ZoneListsNote(lists: ZoneLists, onOpen: () -> Unit) {
 @Composable
 private fun statusText(state: MainState): Pair<String, String> {
     val status = state.status
-    val server = state.servers.firstOrNull { it.id == status.serverId }
+    val server = state.servers.firstOrNull { it.id == status.chosenId }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(status.phase) {
         // Retry countdown every second; "last connected …" every half minute.
@@ -696,11 +701,18 @@ private fun statusText(state: MainState): Pair<String, String> {
         } to server?.let(Repo::displayName).orEmpty()
         Phase.SEARCHING -> stringResource(R.string.status_searching) to
             (state.scan?.let { stringResource(R.string.status_checked, it.done, it.total) } ?: server?.let(Repo::displayName) ?: "")
+        // A Manual pick that didn't answer: the choice is kept and retried, so say so instead of "no server responds".
         Phase.DIRECT -> if (status.noServers) stringResource(R.string.status_no_servers) to
             stringResource(if (state.countries.isNotEmpty()) R.string.status_no_servers_country_sub else R.string.status_no_servers_sub)
+        else if (status.selectedId != null) stringResource(R.string.status_unanswered) to stringResource(
+            R.string.status_selected_direct_sub, server?.let(Repo::displayName).orEmpty(), app.borderless.data.Units.durationText(retryIn),
+        )
         else stringResource(R.string.status_unavailable) to stringResource(R.string.status_direct_sub, app.borderless.data.Units.durationText(retryIn))
         Phase.PAUSED -> if (status.noServers) stringResource(R.string.status_no_servers) to
             stringResource(if (state.countries.isNotEmpty()) R.string.status_no_servers_country_paused_sub else R.string.status_no_servers_paused_sub)
+        else if (status.selectedId != null) stringResource(R.string.status_unanswered) to stringResource(
+            R.string.status_selected_paused_sub, server?.let(Repo::displayName).orEmpty(), app.borderless.data.Units.durationText(retryIn),
+        )
         else stringResource(R.string.status_unavailable) to stringResource(R.string.status_paused_sub, app.borderless.data.Units.durationText(retryIn))
         Phase.NO_NETWORK -> stringResource(R.string.status_no_network) to stringResource(R.string.status_no_network_sub)
         Phase.LIMITED -> stringResource(R.string.status_limited) to
@@ -739,8 +751,10 @@ private fun ConnectButton(phase: Phase, searching: Boolean, sats: List<Satellite
     val fill by animateColorAsState(
         when (phase) {
             Phase.CONNECTED -> Palette.accent
-            Phase.DIRECT, Phase.NO_NETWORK, Phase.LIMITED -> Palette.warning
-            Phase.PAUSED -> Palette.rose
+            Phase.DIRECT -> StateColors.direct.fill
+            Phase.NO_NETWORK -> StateColors.noNetwork.fill
+            Phase.LIMITED -> StateColors.limited.fill
+            Phase.PAUSED -> StateColors.paused.fill
             Phase.SEARCHING -> Palette.accentSoft
             Phase.OFF -> Palette.background
         }, label = "fill",
@@ -749,19 +763,23 @@ private fun ConnectButton(phase: Phase, searching: Boolean, sats: List<Satellite
     val ring by animateColorAsState(
         when (phase) {
             Phase.CONNECTED -> Palette.accentStrong
-            Phase.DIRECT, Phase.NO_NETWORK, Phase.LIMITED -> Palette.warningStrong
-            Phase.PAUSED -> Palette.danger
+            Phase.DIRECT -> StateColors.direct.strong
+            Phase.NO_NETWORK -> StateColors.noNetwork.strong
+            Phase.LIMITED -> StateColors.limited.strong
+            Phase.PAUSED -> StateColors.paused.strong
             Phase.SEARCHING -> Palette.accentContainer
             Phase.OFF -> Color.Transparent
         }, label = "ring",
     )
     val iconColor by animateColorAsState(
         when (phase) {
-            Phase.CONNECTED -> Color.White
+            Phase.CONNECTED -> Palette.onAccent
             Phase.OFF -> Palette.textMuted
             Phase.SEARCHING -> Palette.accent
-            Phase.PAUSED -> Palette.danger
-            else -> Palette.warningIcon
+            Phase.DIRECT -> StateColors.direct.icon
+            Phase.NO_NETWORK -> StateColors.noNetwork.icon
+            Phase.LIMITED -> StateColors.limited.icon
+            Phase.PAUSED -> StateColors.paused.icon
         }, label = "icon",
     )
     // Orbits slide out from under the button while servers are being pinged and back in after.
@@ -1056,7 +1074,7 @@ fun Modifier.pendingSpinner(active: Boolean, spin: () -> Float, color: Color = P
 @Composable
 private fun RoutingChip(enabled: Boolean, onToggle: (Boolean) -> Unit, loading: Boolean = false) {
     val bg by animateColorAsState(if (enabled) Palette.accent else Palette.card, label = "routing")
-    val fg = if (enabled) Color.White else Palette.textSecondary
+    val fg = if (enabled) Palette.onAccent else Palette.textSecondary
     Row(
         Modifier
             .height(44.dp)
@@ -1071,7 +1089,7 @@ private fun RoutingChip(enabled: Boolean, onToggle: (Boolean) -> Unit, loading: 
             androidx.compose.material3.CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = fg)
         } else Icon(Icons.AutoMirrored.Rounded.AltRoute, contentDescription = null, tint = fg, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(6.dp))
-        Text(stringResource(R.string.routing), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (enabled) Color.White else Palette.text)
+        Text(stringResource(R.string.routing), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (enabled) Palette.onAccent else Palette.text)
     }
 }
 
@@ -1139,6 +1157,9 @@ private fun PingChip(scan: Scanner.Progress?, onClick: () -> Unit) {
     }
 }
 
+/** Inline-content key of the limited-network tower in a server row's second line. */
+private const val TOWER_MARK = "tower"
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun ServerRow(
@@ -1197,7 +1218,10 @@ internal fun ServerRow(
             val issues = remember(server.id, server.link) { app.borderless.data.Insecurity.of(server) }
             Text(
                 buildAnnotatedString {
-                    append(listOfNotNull(Countries.name(server.country), group, server.protocol).joinToString(" · "))
+                    append(listOfNotNull(Countries.name(server.country), group).joinToString(" · ", postfix = " · "))
+                    // A limited-network server: the tower before its protocol, as in the groups list.
+                    if (server.limited) appendInlineContent(TOWER_MARK, "▲")
+                    append(server.protocol)
                     // Unprotected on the way to the server: said on the server itself (SECURITY.md S7).
                     if (issues.isNotEmpty()) withStyle(SpanStyle(color = Palette.danger)) {
                         append(" · ")
@@ -1205,6 +1229,16 @@ internal fun ServerRow(
                     }
                 },
                 fontSize = 12.5.sp, color = Palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                inlineContent = if (!server.limited) emptyMap() else mapOf(
+                    TOWER_MARK to androidx.compose.foundation.text.InlineTextContent(
+                        androidx.compose.ui.text.Placeholder(14.sp, 13.sp, androidx.compose.ui.text.PlaceholderVerticalAlign.TextCenter),
+                    ) {
+                        Icon(
+                            app.borderless.ui.TowerIcons.tower, null, tint = app.borderless.ui.theme.StateColors.limited.strong,
+                            modifier = Modifier.padding(end = 1.dp),
+                        )
+                    },
+                ),
             )
         }
         Spacer(Modifier.width(10.dp))

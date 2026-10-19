@@ -35,7 +35,13 @@ object StatsDb {
     enum class Event { LOST, INITIAL, FAILOVER, OPTIMIZE, MANUAL, RETRY, BEST, RECONNECT }
 
     /** Schema version of the first public release; raise it with every additive change (see Helper.onUpgrade). */
-    private const val VERSION = 4
+    private const val VERSION = 5
+
+    /** Longest mobile-radio time one action is believed to need (see `capSleptRadio`). */
+    const val MAX_ACTION_RADIO_MS = 180_000L
+
+    /** The same for one ping or internet check. */
+    const val MAX_CHECK_RADIO_MS = 30_000L
 
     /** Phase rows are repeated this often while the tunnel runs, so a killed process does not inflate durations. */
     const val HEARTBEAT_MS = 5 * 60_000L
@@ -98,6 +104,7 @@ object StatsDb {
             // What each subscription's provider reported at every update.
             db.execSQL("CREATE TABLE sub_usage (ts INTEGER NOT NULL, sub TEXT NOT NULL, used INTEGER, total INTEGER, expire INTEGER)")
             db.execSQL("CREATE INDEX sub_usage_sub_ts ON sub_usage(sub, ts)")
+            createV5(db)
         }
 
         /**
@@ -117,6 +124,37 @@ object StatsDb {
                 db.execSQL("ALTER TABLE samples ADD COLUMN took INTEGER")
                 createV4(db)
             }
+            // 5: Android's own accounting for the app; older activity rows lose the radio time of device sleep.
+            if (oldVersion < 5) {
+                createV5(db)
+                capSleptRadio(db)
+            }
+        }
+
+        /** v5. `sys_power`: Android's per-app battery accounting between two power samples (see [SystemPower]). */
+        private fun createV5(db: SQLiteDatabase) {
+            db.execSQL(
+                "CREATE TABLE sys_power (ts INTEGER NOT NULL, cpu_mams INTEGER, cpu_ms INTEGER, mobile_mams INTEGER, " +
+                    "wifi_mams INTEGER, radio_ms INTEGER, mobile_bytes INTEGER, wifi_bytes INTEGER)"
+            )
+            db.execSQL("CREATE INDEX sys_power_ts ON sys_power(ts)")
+        }
+
+        /**
+         * Before v5 an action's mobile radio time ran by the wall clock, so a phone falling asleep in the middle of a
+         * ping or a scan charged the whole sleep (up to half an hour, ~2 kJ) as radio time. No single action keeps
+         * the radio busy longer than [MAX_ACTION_RADIO_MS] ([MAX_CHECK_RADIO_MS] for a ping or an internet check: the
+         * longest check, a fresh probe after it and the radio's tail): what is above it is taken out, with its energy
+         * at the mobile radio's power (Wi-Fi radio time never grew with the wall clock). The limited-network core's rows
+         * are continuous, not per action, and newer than v4 anyway.
+         */
+        private fun capSleptRadio(db: SQLiteDatabase) {
+            val per = "(CASE WHEN kind LIKE 'PING_%' OR kind = 'NET_CHECK' THEN $MAX_CHECK_RADIO_MS ELSE $MAX_ACTION_RADIO_MS END)"
+            val cap = "MAX(n, 1) * $per"
+            db.execSQL(
+                "UPDATE activity SET mj = MAX(0, mj - CAST((radio_ms - $cap) * ${Energy.CELL_W} AS INTEGER)), radio_ms = $cap " +
+                    "WHERE kind != 'LIMITED_START' AND radio_ms > $cap"
+            )
         }
 
         /**
@@ -408,7 +446,7 @@ object StatsDb {
     }
 
     /** Deletes everything older than [days]. */
-    val TABLES = listOf("samples", "phases", "events", "scans", "traffic", "activity", "power", "current", "measurements", "settings_log", "core_cost", "sub_usage")
+    val TABLES = listOf("samples", "phases", "events", "scans", "traffic", "activity", "power", "current", "measurements", "settings_log", "core_cost", "sub_usage", "sys_power")
 
     /** One window of the core's work: [bytes] proxied through a server of [cls] for [cpuMs] of CPU. */
     fun coreCost(ts: Long, cls: String, bytes: Long, cpuMs: Long) = write(signal = false) {
@@ -485,6 +523,55 @@ object StatsDb {
             put("saver", if (r.saver) 1 else 0); put("metered", if (r.metered) 1 else 0); put("cpu_ms", r.cpuMs); put("pss_kb", r.pssKb)
             put("cap_mah", r.capacityMah); put("mv", r.mv)
         })
+    }
+
+    /** Android's accounting for the app since the previous power sample ([SystemPower.delta]). */
+    fun sysPower(ts: Long, d: SystemPower.Snapshot) = write(signal = false) {
+        insert("sys_power", null, ContentValues().apply {
+            put("ts", ts); put("cpu_mams", d.cpuMams); put("cpu_ms", d.cpuMs); put("mobile_mams", d.mobileMams)
+            put("wifi_mams", d.wifiMams); put("radio_ms", d.radioMs); put("mobile_bytes", d.mobileBytes); put("wifi_bytes", d.wifiBytes)
+        })
+    }
+
+    /** Android's accounting rows in [from, to). */
+    suspend fun sysPowerRows(from: Long, to: Long): List<Pair<Long, SystemPower.Snapshot>> = read(emptyList()) {
+        rawQuery(
+            "SELECT ts, cpu_mams, cpu_ms, mobile_mams, wifi_mams, radio_ms, mobile_bytes, wifi_bytes FROM sys_power WHERE ts >= ? AND ts < ? ORDER BY ts",
+            arrayOf(from.toString(), to.toString()),
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) add(
+                    c.getLong(0) to SystemPower.Snapshot(c.getLong(1), c.getLong(2), c.getLong(3), c.getLong(4), c.getLong(5), c.getLong(6), c.getLong(7))
+                )
+            }
+        }
+    }
+
+    /**
+     * The activity counters' writes in [from, to) with their energy per kind, for the energy chart
+     * ([ActivityMath.energyOverTime]); writes with no energy are kept, they bound the stretch of the next one.
+     * Kinds this version doesn't know any more are left out of the energy.
+     */
+    suspend fun activityFlushes(from: Long, to: Long): List<ActivityMath.Flush> = read(emptyList()) {
+        val known = Activity.Kind.entries.associateBy { it.name }
+        rawQuery(
+            "SELECT ts, kind, SUM(mj) FROM activity WHERE ts >= ? AND ts < ? GROUP BY ts, kind ORDER BY ts",
+            arrayOf(from.toString(), to.toString()),
+        ).use { c ->
+            val out = ArrayList<ActivityMath.Flush>()
+            var ts = Long.MIN_VALUE
+            var cur = HashMap<Activity.Kind, Long>()
+            while (c.moveToNext()) {
+                if (c.getLong(0) != ts) {
+                    if (ts != Long.MIN_VALUE) out += ActivityMath.Flush(ts, cur)
+                    ts = c.getLong(0)
+                    cur = HashMap()
+                }
+                known[c.getString(1)]?.let { k -> c.getLong(2).takeIf { it > 0 }?.let { cur[k] = (cur[k] ?: 0L) + it } }
+            }
+            if (ts != Long.MIN_VALUE) out += ActivityMath.Flush(ts, cur)
+            out
+        }
     }
 
     fun prune(days: Int) = write {
@@ -572,21 +659,45 @@ object StatsDb {
         }
     }
 
-    data class Aggregate(val count: Int, val ok: Int, val avg: Int?, val min: Int?, val max: Int?) {
-        val availability: Double? get() = if (count == 0) null else ok.toDouble() / count
+    /**
+     * [count] / [ok]: plain numbers of checks; [share]: answered by time ([StatsMath.availability]) over [slices] time
+     * slices — what [availability] means.
+     */
+    data class Aggregate(
+        val count: Int, val ok: Int, val avg: Int?, val min: Int?, val max: Int?,
+        val share: Double? = null, val slices: Int = 0,
+    ) {
+        val availability: Double? get() = share ?: if (count == 0) null else ok.toDouble() / count
+
+        /** How much this server was checked, in time slices (plain checks when no slices are known). */
+        val weight: Double get() = if (slices > 0) slices.toDouble() else count.toDouble()
+
+        /** The answered part of [weight]: smoothed shares sum these over servers, never raw checks. */
+        val answered: Double get() = (availability ?: 0.0) * weight
     }
 
-    /** Per-server counts and latency aggregates computed in SQLite. */
+    /**
+     * Checks per server and time slice ([StatsMath.AVAIL_SLICE_MS]): n checks, k answers, the sum / min / max of the
+     * answers and the last answer. Every availability query aggregates these, so bursts of checks while nothing works
+     * count as one slice ([StatsMath.availability]). [where] filters samples (its "?" are bound by the caller).
+     */
+    private fun slices(where: String) =
+        "SELECT server, ts / ${StatsMath.AVAIL_SLICE_MS} AS b, COUNT(*) AS n, COUNT(ms) AS k, SUM(ms) AS sm, MIN(ms) AS mn, " +
+            "MAX(ms) AS mx, MAX(CASE WHEN ms IS NOT NULL THEN ts END) AS lastok FROM samples WHERE $where GROUP BY server, b"
+
+    /** Per-server counts and latency aggregates computed in SQLite; availability by time. */
     suspend fun aggregates(from: Long, to: Long): Map<String, Aggregate> = read(emptyMap()) {
         rawQuery(
-            "SELECT server, COUNT(*), COUNT(ms), AVG(ms), MIN(ms), MAX(ms) FROM samples WHERE ts >= ? AND ts < ? GROUP BY server",
+            "SELECT server, SUM(n), SUM(k), SUM(sm) * 1.0 / SUM(k), MIN(mn), MAX(mx), AVG(k * 1.0 / n), COUNT(*) " +
+                "FROM (${slices("ts >= ? AND ts < ?")}) GROUP BY server",
             arrayOf(from.toString(), to.toString()),
         ).use { c ->
             buildMap {
                 while (c.moveToNext()) put(
                     c.getString(0),
                     Aggregate(c.getInt(1), c.getInt(2), if (c.isNull(3)) null else c.getDouble(3).toInt(),
-                        if (c.isNull(4)) null else c.getInt(4), if (c.isNull(5)) null else c.getInt(5)),
+                        if (c.isNull(4)) null else c.getInt(4), if (c.isNull(5)) null else c.getInt(5),
+                        if (c.isNull(6)) null else c.getDouble(6), c.getInt(7)),
                 )
             }
         }
@@ -621,14 +732,15 @@ object StatsDb {
      */
     suspend fun ranking(since: Long): Map<String, Double> = read(emptyMap()) {
         val hourAgo = System.currentTimeMillis() - 3_600_000L
+        // By time slices, not checks: retries while nothing worked would otherwise sink every server they hit.
         rawQuery(
-            "SELECT server, COUNT(*), COUNT(ms), AVG(ms), MAX(CASE WHEN ms IS NOT NULL THEN ts END) FROM samples WHERE ts >= ? GROUP BY server",
+            "SELECT server, COUNT(*), SUM(k * 1.0 / n), SUM(sm) * 1.0 / SUM(k), MAX(lastok) FROM (${slices("ts >= ?")}) GROUP BY server",
             arrayOf(since.toString()),
         ).use { c ->
             buildMap {
                 while (c.moveToNext()) {
-                    val count = c.getInt(1)
-                    val ok = c.getInt(2)
+                    val count = c.getDouble(1)
+                    val ok = c.getDouble(2)
                     val avg = if (c.isNull(3)) null else c.getDouble(3)
                     val lastOk = if (c.isNull(4)) 0L else c.getLong(4)
                     val recent = if (lastOk >= hourAgo) 1.5 else 1.0
@@ -640,35 +752,35 @@ object StatsDb {
 
     /** Per-server counts over a long and a short window (see [poolStats]). */
     data class PoolStat(
-        val shortCount: Int, val shortOk: Int,
-        val longCount: Int, val longOk: Int,
+        val shortCount: Double, val shortOk: Double,
+        val longCount: Double, val longOk: Double,
         val avgMs: Double?, val lastOk: Long?,
     )
 
     /**
-     * Probe/health counts per server since [longSince], and since [shortSince] separately. A failure
-     * only counts if some server answered within a minute of it: when nothing answers at all, the
-     * phone was offline, which says nothing about the servers.
+     * Answered share per server since [longSince], and since [shortSince] separately, in time slices (counts = slices,
+     * ok = their summed shares; [StatsMath.availability]). A failure only counts if some server answered within a
+     * minute of it: when nothing answers at all, the phone was offline, which says nothing about the servers.
      */
     suspend fun poolStats(longSince: Long, shortSince: Long): Map<String, PoolStat> = read(emptyMap()) {
         rawQuery(
             """
             WITH good AS (SELECT DISTINCT ts / 60000 AS m FROM samples WHERE ms IS NOT NULL AND ts >= ?1)
             SELECT server,
-                SUM(CASE WHEN ts >= ?2 THEN 1 ELSE 0 END),
-                SUM(CASE WHEN ts >= ?2 AND ms IS NOT NULL THEN 1 ELSE 0 END),
-                COUNT(*), COUNT(ms), AVG(ms), MAX(CASE WHEN ms IS NOT NULL THEN ts END)
-            FROM samples
-            WHERE ts >= ?1 AND (ms IS NOT NULL OR ts / 60000 IN good OR ts / 60000 - 1 IN good OR ts / 60000 + 1 IN good)
+                SUM(CASE WHEN b >= CAST(?2 AS INTEGER) THEN 1 ELSE 0 END),
+                SUM(CASE WHEN b >= CAST(?2 AS INTEGER) THEN k * 1.0 / n ELSE 0 END),
+                COUNT(*), SUM(k * 1.0 / n), SUM(sm) * 1.0 / SUM(k), MAX(lastok)
+            FROM (${slices("ts >= ?1 AND (ms IS NOT NULL OR ts / 60000 IN good OR ts / 60000 - 1 IN good OR ts / 60000 + 1 IN good)")})
             GROUP BY server
             """.trimIndent(),
-            arrayOf(longSince.toString(), shortSince.toString()),
+            // b is an expression without affinity: a text parameter would never compare equal or greater, hence the CAST.
+            arrayOf(longSince.toString(), (shortSince / StatsMath.AVAIL_SLICE_MS).toString()),
         ).use { c ->
             buildMap {
                 while (c.moveToNext()) put(
                     c.getString(0),
                     PoolStat(
-                        c.getInt(1), c.getInt(2), c.getInt(3), c.getInt(4),
+                        c.getDouble(1), c.getDouble(2), c.getDouble(3), c.getDouble(4),
                         if (c.isNull(5)) null else c.getDouble(5), if (c.isNull(6)) null else c.getLong(6),
                     ),
                 )

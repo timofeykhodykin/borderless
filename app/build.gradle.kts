@@ -47,6 +47,109 @@ val downloadCore = tasks.register("downloadCore") {
 }
 tasks.named("preBuild") { dependsOn(downloadCore) }
 
+// The native limited-network core (native/limited: our own Go transport + the owner's credential provider) is a
+// self-contained program built from source here with a pinned Go toolchain: downloaded once into .gradle/go and
+// checked against its SHA-256 (both values from go.dev and dl.google.com). Go modules are checked against go.sum.
+// One executable per ABI, packaged as lib/<abi>/liblimited.so so Android installs it executable; core/Limited.kt
+// starts it and talks to it over stdin/stdout (see native/limited/cmd/limitedd). It runs in its own process because
+// an app can hold only one gomobile library and Xray already is one (native/limited/cmd/limitedd, DESIGN.md).
+val goVersion = "1.27.2"
+val goArchives = mapOf(
+    "darwin-arm64" to "76812b213b1b2302c978d28fa52fa92d541704b9e7d9d5db8002c50e4018c4c5",
+    "darwin-amd64" to "587b59182488b23aa6e5fc25110405a3e0e5b38ed2f5b2f46ed13c32aee356fe",
+    "linux-amd64" to "ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5",
+    "linux-arm64" to "94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8",
+)
+val goHome = rootProject.file(".gradle/go")
+val goRoot = File(goHome, "go$goVersion")
+val limitedSrc = rootProject.file("native/limited")
+val limitedOut = layout.buildDirectory.dir("limited/jniLibs").get().asFile
+
+/** ABI → GOOS, GOARCH, GOARM. Go links android/arm64 itself; the other two need cgo for GOOS=android, so they are
+ * static linux executables (Android runs those as well). The core is pure Go (no cgo), so this works everywhere. */
+val limitedTargets = mapOf(
+    "arm64-v8a" to Triple("android", "arm64", ""),
+    "armeabi-v7a" to Triple("linux", "arm", "7"),
+    "x86_64" to Triple("linux", "amd64", ""),
+)
+
+/**
+ * Environment of every Go command: everything Go writes stays in .gradle/go — module and build caches, GOPATH (where
+ * `go install` puts tools) and, through HOME / XDG_CONFIG_HOME, its telemetry counters — never ~/go,
+ * ~/Library/Caches/go-build or the user's config folder.
+ */
+fun goEnv(extra: Map<String, String> = emptyMap()): Map<String, String> = mapOf(
+    "GOROOT" to goRoot.absolutePath, "GOPATH" to File(goHome, "gopath").absolutePath,
+    "GOCACHE" to File(goHome, "cache").absolutePath, "GOMODCACHE" to File(goHome, "mod").absolutePath,
+    "HOME" to File(goHome, "home").absolutePath, "XDG_CONFIG_HOME" to File(goHome, "home/.config").absolutePath,
+    "GOTOOLCHAIN" to "local", "GOFLAGS" to "-mod=readonly", "CGO_ENABLED" to "0",
+) + extra
+
+fun run(cmd: List<String>, dir: File, env: Map<String, String> = emptyMap()) {
+    val p = ProcessBuilder(cmd).directory(dir).redirectErrorStream(true).apply { environment().putAll(env) }.start()
+    val out = p.inputStream.bufferedReader().readText()
+    if (p.waitFor() != 0) throw GradleException("${cmd.first()} failed:\n$out")
+}
+
+val downloadGo = tasks.register("downloadGo") {
+    description = "Downloads the pinned Go toolchain into .gradle/go if it is missing (SHA-256 checked)"
+    doLast {
+        if (File(goRoot, "bin/go").exists()) return@doLast
+        val os = System.getProperty("os.name").lowercase().let { if ("mac" in it) "darwin" else "linux" }
+        val arch = System.getProperty("os.arch").let { if (it == "aarch64" || it == "arm64") "arm64" else "amd64" }
+        val key = "$os-$arch"
+        val want = goArchives[key] ?: throw GradleException("No pinned Go toolchain for $key")
+        goHome.mkdirs()
+        val archive = File(goHome, "go$goVersion.$key.tar.gz")
+        val url = "https://go.dev/dl/go$goVersion.$key.tar.gz"
+        logger.lifecycle("Downloading $url")
+        uri(url).toURL().openStream().use { input -> archive.outputStream().use { input.copyTo(it) } }
+        val got = sha256(archive)
+        if (got != want) {
+            archive.delete()
+            throw GradleException("Go $goVersion ($key): SHA-256 $got, expected $want — not using it")
+        }
+        val tmp = File(goHome, "unpack").apply { deleteRecursively(); mkdirs() }
+        run(listOf("tar", "xzf", archive.absolutePath), tmp)
+        File(tmp, "go").renameTo(goRoot)
+        tmp.deleteRecursively()
+        archive.delete()
+    }
+}
+
+val buildLimited = tasks.register("buildLimited") {
+    description = "Builds the native limited-network core (native/limited/cmd/limitedd) for every ABI"
+    dependsOn(downloadGo)
+    inputs.dir(limitedSrc)
+    inputs.property("go", goVersion)
+    outputs.dir(limitedOut)
+    doLast {
+        limitedTargets.forEach { (abi, t) ->
+            val (goos, goarch, goarm) = t
+            val out = File(limitedOut, "$abi/liblimited.so").apply { parentFile.mkdirs() }
+            run(
+                listOf(
+                    File(goRoot, "bin/go").absolutePath, "build", "-trimpath", "-buildvcs=false",
+                    "-ldflags=-checklinkname=0 -s -w -buildid=", "-o", out.absolutePath, "./cmd/limitedd",
+                ),
+                limitedSrc,
+                goEnv(mapOf("GOOS" to goos, "GOARCH" to goarch, "GOARM" to goarm)),
+            )
+        }
+    }
+}
+tasks.named("preBuild") { dependsOn(buildLimited) }
+
+val testLimited = tasks.register("testLimited") {
+    description = "Runs go vet and go test for the native limited-network core with the pinned Go (nothing outside .gradle/go)"
+    dependsOn(downloadGo)
+    doLast {
+        val go = File(goRoot, "bin/go").absolutePath
+        run(listOf(go, "vet", "./..."), limitedSrc, goEnv())
+        run(listOf(go, "test", "./..."), limitedSrc, goEnv())
+    }
+}
+
 /**
  * Interface languages: English (`res/values`) plus every `res/values-<qualifier>` folder holding a translated
  * strings.xml. Adding a language needs nothing else: the APK keeps it, the system's per-app language list
@@ -93,8 +196,8 @@ android {
         targetSdk = 36
         // versionName: MAJOR.MINOR.PATCH[-beta.N | -rc.N]; versionCode: (MAJOR*10000 + MINOR*100 + PATCH)*100 + N,
         // with N = 99 for the final release of that version (so every build is newer than the one before).
-        versionCode = 2000099
-        versionName = "2.0.0"
+        versionCode = 3000099
+        versionName = "3.0.0"
         buildConfigField("String", "XRAY_CORE_VERSION", "\"$xrayCoreVersion\"")
         buildConfigField("String[]", "UI_LANGUAGES", uiLanguages.joinToString(", ", "{", "}") { "\"${languageTag(it)}\"" })
     }
@@ -165,6 +268,9 @@ android {
     packaging {
         jniLibs { useLegacyPackaging = true }
     }
+
+    // The core executables built by buildLimited (extracted on install thanks to useLegacyPackaging).
+    sourceSets.getByName("main").jniLibs.directories.add(limitedOut.absolutePath)
 }
 
 if (project.hasProperty("demo")) android.sourceSets.getByName("debug").kotlin.srcDir("src/demo/java")

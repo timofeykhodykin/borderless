@@ -50,11 +50,41 @@ object DeviceProfile {
     var info: Info = GENERIC
         private set
 
+    /** What the phone's table (or the generic values) says, before [calibrate]. */
+    private var base: Info = GENERIC
+
+    /** The table's CPU power (before [calibrate]). */
+    val tableCpuW: Double get() = base.cpu.mid
+
+    /** CPU power learned from Android's own accounting ([SystemPower.cpuWatts]); null until there is enough of it. */
+    @Volatile
+    var cpuCalibration: Double? = null
+        private set
+
+    /** Margin around a calibrated CPU power: the system's own figure is an estimate too. */
+    const val CALIBRATED_SPREAD = 0.15
+
+    /** Marks [Info.source] when the CPU power comes from Android's accounting. */
+    const val CALIBRATED = "android"
+
+    /** Takes [w] (W per busy core, null = not known) as the CPU power, with a narrow margin ([CALIBRATED_SPREAD]). */
+    fun calibrate(w: Double?) {
+        cpuCalibration = w
+        info = calibrated(base, w)
+    }
+
+    /** Pure part of [calibrate] (tested). */
+    fun calibrated(b: Info, w: Double?): Info = if (w == null) b else b.copy(
+        cpu = Power(w * (1 - CALIBRATED_SPREAD), w, w * (1 + CALIBRATED_SPREAD)),
+        source = "${b.source} + $CALIBRATED",
+    )
+
     private const val NOMINAL_V = 3.85
 
     /** [volts]: the battery's voltage right now if the phone reports it (the table's currents are at the battery). */
     fun load(volts: Double? = null) {
-        info = runCatching { read(volts ?: NOMINAL_V) }.getOrNull() ?: GENERIC.copy(soc = soc(), maxFreqMhz = maxFreqs())
+        base = runCatching { read(volts ?: NOMINAL_V) }.getOrNull() ?: GENERIC.copy(soc = soc(), maxFreqMhz = maxFreqs())
+        info = calibrated(base, cpuCalibration)
     }
 
     private fun soc(): String =

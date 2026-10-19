@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.borderless.R
+import app.borderless.config.LimitedLink
 import app.borderless.data.Repo
 import app.borderless.data.SupportStats
 import app.borderless.ui.stats.SeriesColors
@@ -57,6 +58,14 @@ fun SupportSection() {
         Frame(stringResource(R.string.sup_protocols), SeriesColors[0], SupportStats.PROTOCOLS.map { (k, name) -> name to counts["p:$k"] })
         Frame(stringResource(R.string.sup_transports), SeriesColors[2], SupportStats.TRANSPORTS.map { (k, name) -> name to counts["t:$k"] })
         Frame(stringResource(R.string.sup_security), SeriesColors[6], SupportStats.SECURITY.map { (k, name) -> name to counts["s:$k"] })
+        // Limited-network servers stand apart: their own frame, in the yellow that marks them everywhere (every scheme).
+        val limited = SupportStats.limited(servers)
+        Frame(
+            stringResource(R.string.sup_limited), app.borderless.ui.theme.StateColors.limited.strong,
+            listOf(LimitedLink.PROTOCOL to limited),
+            // Yellow text on white is hard to read: the frame stays yellow, the words take the state's dark tone.
+            textColor = app.borderless.ui.theme.StateColors.limited.icon,
+        )
     }
 }
 
@@ -66,7 +75,7 @@ fun SupportSection() {
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun Frame(title: String, color: Color, items: List<Pair<String, Int?>>, countAll: Boolean = true) {
+private fun Frame(title: String, color: Color, items: List<Pair<String, Int?>>, countAll: Boolean = true, textColor: Color = color) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -82,7 +91,7 @@ private fun Frame(title: String, color: Color, items: List<Pair<String, Int?>>, 
             }
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        Text(title, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = color)
+        Text(title, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = textColor)
         Spacer(Modifier.height(8.dp))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             items.forEach { (name, n) ->
@@ -94,7 +103,7 @@ private fun Frame(title: String, color: Color, items: List<Pair<String, Int?>>, 
                         Spacer(Modifier.width(5.dp))
                         Text(
                             count.toString(), fontSize = 14.sp, fontFamily = Display, fontWeight = FontWeight.Bold,
-                            color = if (dim) Palette.textMuted else color,
+                            color = if (dim) Palette.textMuted else textColor,
                         )
                     }
                 }

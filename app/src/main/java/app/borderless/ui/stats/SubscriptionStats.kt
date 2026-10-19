@@ -187,8 +187,9 @@ fun SubscriptionStatsScreen(subId: String, onBack: () -> Unit, onServer: (String
 private fun SubTiles(context: Context, sub: Subscription, d: SubData) {
     val ownTraffic = d.traffic.values.sum()
     val samples = d.aggregates.values
-    val count = samples.sumOf { it.count }
-    val ok = samples.sumOf { it.ok }
+    // By time like each server's own ([StatsDb.Aggregate.availability]), weighted by how long each was checked.
+    val weight = samples.sumOf { it.weight }
+    val share = if (weight == 0.0) null else samples.sumOf { it.answered } / weight
     val last = d.reports.lastOrNull()
     val used = last?.used ?: ((sub.uploadBytes ?: 0) + (sub.downloadBytes ?: 0)).takeIf { sub.uploadBytes != null || sub.downloadBytes != null }
     val total = last?.total ?: sub.totalBytes
@@ -216,7 +217,7 @@ private fun SubTiles(context: Context, sub: Subscription, d: SubData) {
             ),
             Triple(stringResource(R.string.ss_chosen), androidx.compose.ui.res.pluralStringResource(R.plurals.ss_chosen_value, d.chosen, d.chosen), null),
             Triple(
-                stringResource(R.string.ss_availability), if (count == 0) "—" else "${ok.toLong() * 100 / count}%",
+                stringResource(R.string.ss_availability), share?.let { "${(it * 100).toInt()}%" } ?: "—",
                 stringResource(R.string.subst_answered, samples.count { it.ok > 0 }, samples.size),
             ),
             Triple(

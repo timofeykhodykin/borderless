@@ -46,9 +46,14 @@ object SupportStats {
     fun count(servers: List<Server>): Map<String, Int> {
         val counts = HashMap<String, Int>()
         servers.forEach { s ->
+            // Limited-network servers (limited-network links) have only a placeholder outbound; they are counted on their own.
+            if (s.limited) return@forEach
             val f = runCatching { features(s.link, LinkParser.parse(s.link).outbounds) }.getOrDefault(emptySet())
             f.forEach { counts[it] = (counts[it] ?: 0) + 1 }
         }
         return counts
     }
+
+    /** Number of limited-network servers, shown in their own frame. */
+    fun limited(servers: List<Server>): Int = servers.count { it.limited }
 }

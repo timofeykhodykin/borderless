@@ -53,6 +53,8 @@
                 <data android:scheme="hysteria2" />
                 <data android:scheme="hy2" />
                 <data android:scheme="wireguard" />
+                <data android:scheme="wdtt" />
+                <data android:scheme="qwdtt" />
                 <data android:scheme="borderless" />
             </intent-filter>
         </activity>
@@ -76,6 +78,54 @@
             android:exported="true"
             android:icon="@mipmap/ic_launcher_mono"
             android:roundIcon="@mipmap/ic_launcher_mono"
+            android:targetActivity=".ui.MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".ui.LauncherPowder"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_powder"
+            android:roundIcon="@mipmap/ic_launcher_powder"
+            android:targetActivity=".ui.MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".ui.LauncherSage"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_sage"
+            android:roundIcon="@mipmap/ic_launcher_sage"
+            android:targetActivity=".ui.MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".ui.LauncherLavender"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_lavender"
+            android:roundIcon="@mipmap/ic_launcher_lavender"
+            android:targetActivity=".ui.MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".ui.LauncherSky"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_sky"
+            android:roundIcon="@mipmap/ic_launcher_sky"
             android:targetActivity=".ui.MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

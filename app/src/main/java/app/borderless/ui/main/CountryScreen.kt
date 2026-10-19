@@ -245,7 +245,7 @@ fun CountryScreen(onBack: () -> Unit) {
                                         server = s,
                                         ping = pings[s.id],
                                         group = groupNames[Repo.groupOf(s)],
-                                        current = status.active && s.id == status.serverId,
+                                        current = status.active && s.id == status.chosenId,
                                         pending = s.id in pending,
                                         probing = s.id in probing,
                                         spin = spin,

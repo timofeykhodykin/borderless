@@ -28,6 +28,19 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 class BorderlessApp : Application() {
+    /** The palette's light or dark scheme, as the settings and (when they follow it) the system's theme say. */
+    private fun applyScheme(config: android.content.res.Configuration = resources.configuration) {
+        val night = (config.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        val s = Repo.settings.value
+        Palette.scheme = Schemes.byId(s.palette, s.darkNow(night))
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyScheme(newConfig)
+    }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + Errors.handler)
 
     override fun onCreate() {
@@ -63,16 +76,29 @@ class BorderlessApp : Application() {
         SettingsLog.start()
         Errors.guard("battery saving", Unit, show = false) { Eco.init(this) }
         Errors.guard("Xray core", Unit) { CoreEnv.attach(this) }
+        Errors.guard("limited-network servers", Unit, show = false) { app.borderless.core.Limited.attach(this) }
+        // Android's own battery accounting for the app: what it offers here, and the CPU power learned from it (hourly).
+        Errors.guard("system power", Unit, show = false) {
+            app.borderless.data.SystemPower.init(this)
+            AppLog.debug("Energy", app.borderless.data.SystemPower.take()?.let { "Android's accounting for the app (since its last reset): ${it.describe()}" } ?: "Android's accounting for the app: not available")
+        }
+        scope.launch(Dispatchers.IO) {
+            while (true) {
+                Errors.guard("system power", Unit, show = false) { app.borderless.data.SystemPower.recalibrate() }
+                kotlinx.coroutines.delay(3_600_000L)
+            }
+        }
         scope.launch(Dispatchers.IO) { Errors.guard("Xray core", Unit) { CoreEnv.ensure() } }
         Errors.guard("notification channel", Unit, show = false) { Notifications.ensureChannel(this) }
         // The tile mirrors the tunnel status.
-        // The chosen colour scheme, from the first frame on and whenever it changes.
-        Palette.scheme = Schemes.byId(Repo.settings.value.palette)
+        // The chosen colour scheme, from the first frame on and whenever it changes (also the system's theme:
+        // onConfigurationChanged).
+        applyScheme()
         AppIcon.applyIfIdle(this, Repo.settings.value.palette)
         scope.launch {
             // The launcher icon follows later, when the app goes to the background (MainActivity.onStop):
             // switching it while the app is open makes Android close the app.
-            Repo.settings.map { it.palette }.distinctUntilChanged().collect { Palette.scheme = Schemes.byId(it) }
+            Repo.settings.map { Triple(it.palette, it.darkTheme, it.themeFollowsSystem) }.distinctUntilChanged().collect { applyScheme() }
         }
         // Diagnostic current measurement follows its setting.
         scope.launch {

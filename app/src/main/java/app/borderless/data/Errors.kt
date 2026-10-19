@@ -51,8 +51,11 @@ object Errors {
     /** The same failure again within this time is logged but not shown again. */
     private const val REPEAT_MS = 60_000L
 
-    /** One error to show: a user-level [message] and the full [details] for copying. */
-    data class Report(val id: Long, val message: String, val details: String, val crash: Boolean = false)
+    /**
+     * One error to show: a user-level [message] and the full [details] for copying. [bug]: it points at a bug in the
+     * app (it is kept for reporting too, see [isBug]) — the dialog asks the user to report it on the project's page.
+     */
+    data class Report(val id: Long, val message: String, val details: String, val crash: Boolean = false, val bug: Boolean = false)
 
     private val ids = AtomicLong()
     private val _pending = MutableStateFlow<List<Report>>(emptyList())
@@ -113,7 +116,7 @@ object Errors {
                 AppLog.event(LText.of(R.string.ev_crashed), AppLog.Kind.ERROR)
                 AppLog.debug(TAG, "the previous run crashed:\n$text")
                 keep(at, "crash|" + text.lines().drop(5).take(2).joinToString("|"), text)
-                enqueue(Report(ids.incrementAndGet(), Res.s(R.string.err_crashed), text, crash = true))
+                enqueue(Report(ids.incrementAndGet(), Res.s(R.string.err_crashed), text, crash = true, bug = true))
             }
         }
         Thread({ runCatching { logExits(context) } }, "exit-reasons").start()
@@ -180,7 +183,9 @@ object Errors {
             AppLog.debug(TAG, Scrub.secrets("$where: ${e.javaClass.name}: ${e.message}\n${trace(e)}"))
             val message = userText ?: describe(e)
             AppLog.event(LText.of(R.string.err_event, message), AppLog.Kind.ERROR)
-            if (isBug(e)) keep(System.currentTimeMillis(), signature(e, where), details(e, where))
+            // A bug goes to "Errors to report" and the dialog offers to report it on the project's page.
+            val bug = isBug(e)
+            if (bug) keep(System.currentTimeMillis(), signature(e, where), details(e, where))
             if (!show) return
             val key = "$where|${e.javaClass.name}|${e.message}"
             val now = System.currentTimeMillis()
@@ -188,7 +193,7 @@ object Errors {
                 if ((lastShown[key] ?: 0L) > now - REPEAT_MS) return
                 lastShown[key] = now
             }
-            enqueue(Report(ids.incrementAndGet(), message, details(e, where)))
+            enqueue(Report(ids.incrementAndGet(), message, details(e, where), bug = bug))
         }
     }
 

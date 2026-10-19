@@ -26,4 +26,12 @@ class CountryStatsTest {
         assertEquals(3.0 / 4.0, st.getValue("FR"), 1e-9)
         assertTrue(Countries.UNKNOWN !in st) // never checked
     }
+
+    @Test
+    fun stabilityCountsTimeNotChecks() {
+        fun srv(id: String, country: String?) = Server(id, id, "x", "VLESS", "h", 443, country = country)
+        // 300 checks, mostly retries in a bad hour: by time (12 slices, 11 of them answered) it is 11/12, not 100/300.
+        val agg = mapOf("a" to StatsDb.Aggregate(300, 100, null, null, null, share = 11.0 / 12, slices = 12))
+        assertEquals(12.0 / 14.0, CountryStats.stability(listOf(srv("a", "DE")), agg).getValue("DE"), 1e-9)
+    }
 }

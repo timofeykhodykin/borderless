@@ -432,7 +432,8 @@ private fun SummaryTiles(context: Context, d: Overview, period: Period) {
     val failover = d.events.count { it.type == StatsDb.Event.FAILOVER }
     val faster = d.events.count { it.type == StatsDb.Event.OPTIMIZE || it.type == StatsDb.Event.BEST }
     val manual = d.events.count { it.type == StatsDb.Event.MANUAL }
-    val avail = d.scans.takeIf { it.isNotEmpty() }
+    // By time, without stretches with no network: retries while nothing answered no longer outweigh quiet hours.
+    val avail = StatsMath.scanShare(d.scans, d.segments.filter { it.phase == Phase.NO_NETWORK }, d.to)
     // Connections made after a check of servers: where the chosen one stood in the check order.
     val found = d.events.filter { it.pos != null && (it.type == StatsDb.Event.INITIAL || it.type == StatsDb.Event.FAILOVER || it.type == StatsDb.Event.RETRY) }
     fun pct(part: Long, whole: Long) = if (whole <= 0) "—" else "${part * 100 / whole}%"
@@ -462,10 +463,8 @@ private fun SummaryTiles(context: Context, d: Overview, period: Period) {
             // Share of checked servers that answered (scans may check only some), and a typical scan.
             Triple(
                 stringResource(R.string.st_available),
-                avail?.let { a -> a.sumOf { it.total }.takeIf { it > 0 }?.let { t -> "${a.sumOf { it.available } * 100 / t}%" } } ?: "—",
-                avail?.let { a ->
-                    stringResource(R.string.st_available_sub2, a.map { it.available }.average().roundToInt(), a.map { it.total }.average().roundToInt())
-                },
+                avail?.let { "${(it.share * 100).roundToInt()}%" } ?: "—",
+                avail?.let { stringResource(R.string.st_available_sub2, it.available.roundToInt(), it.total.roundToInt()) },
             ),
             Triple(stringResource(R.string.st_traffic), formatBytes(context, d.traffic.proxy), stringResource(R.string.st_traffic_sub, formatBytes(context, d.traffic.direct))),
         )
@@ -589,7 +588,7 @@ private fun PingCard(
 internal fun shortName(name: String, max: Int): String =
     if (name.length <= max) name else name.take(max - 7).trimEnd() + "…" + name.takeLast(6).trimStart()
 
-private fun score(a: StatsDb.Aggregate) = StatsMath.score(a.count, a.ok, a.avg?.toDouble())
+private fun score(a: StatsDb.Aggregate) = StatsMath.score(a.weight, a.answered, a.avg?.toDouble())
 
 /**
  * Servers the ping chart shows by default: the one in use at the end of the period (or the last one
@@ -796,7 +795,7 @@ fun ServerStatsScreen(serverId: String, onBack: () -> Unit) {
                 val s = d.summary
                 TileGrid(
                     listOf(
-                        Triple(stringResource(R.string.ss_availability), "${((s.availability ?: 0.0) * 100).toInt()}%", "${s.ok} / ${s.count}"),
+                        Triple(stringResource(R.string.ss_availability), "${((s.availability ?: 0.0) * 100).toInt()}%", stringResource(R.string.ss_availability_sub, s.ok, s.count)),
                         Triple(stringResource(R.string.ss_median), msText(context, s.median), stringResource(R.string.ss_p95, msText(context, s.p95))),
                         Triple(stringResource(R.string.ss_minmax), if (s.min == null || s.max == null) "—" else "${s.min} / ${stringResource(R.string.ms, s.max)}", null),
                         Triple(stringResource(R.string.ss_jitter), msText(context, s.jitter), null),

@@ -281,6 +281,13 @@ object Updater {
         return (a.toInt() * 10000 + b.toInt() * 100 + c.toInt()) * 100 + 99
     }
 
+    /**
+     * The project's page for a new issue with [title] and [body] filled in — what the error dialog offers for a
+     * failure that points at a bug in the app. The address stays encoded, like everywhere (see [project]).
+     */
+    fun issuesUrl(title: String, body: String): String =
+        "https://github.com/${project()}/issues/new?labels=bug&title=${Uri.encode(title)}&body=${Uri.encode(body)}"
+
     /** "owner/name" of the project, decoded (kept out of the app's strings). */
     internal fun project(): String {
         val key = byteArrayOf(0x5a, 0x13, 0xc7.toByte(), 0x2e, 0x91.toByte(), 0x44, 0x0b, 0xe8.toByte())

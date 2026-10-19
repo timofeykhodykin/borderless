@@ -34,6 +34,8 @@ object Activity {
         PROBE_EXPLORE(R.string.act_probe_explore, Group.PROBE),
         PROBE_RESCUE(R.string.act_probe_rescue, Group.PROBE),
         SUB_UPDATE(R.string.act_sub_update, Group.OTHER, wake = true),
+        /** Starting a limited-network server's core program (its own traffic runs in a separate process, see Limited). */
+        LIMITED_START(R.string.act_limited, Group.OTHER, wake = true),
         NET_CHECK(R.string.act_net_check, Group.OTHER),
         CORE_START(R.string.act_core_start, Group.LOCAL),
         DB_COMMIT(R.string.act_db_commit, Group.LOCAL),
@@ -119,8 +121,10 @@ object Activity {
     }
 
     private var lastCpuMs = Process.getElapsedCpuTime()
+    private var lastLimitedCpuMs = 0L
     private var lastSampleAt = 0L
     private var lastBaseAt = 0L
+    private var lastSystem: SystemPower.Snapshot? = null
     private const val SAMPLE_MS = 4 * 60_000L
 
     /**
@@ -142,9 +146,16 @@ object Activity {
         lastCpuMs = cpu
         // CPU not spent in tracked actions: the core forwarding traffic, and the app's own screens.
         val base = (cpuDelta - Energy.takeAttributedCpu()).coerceAtLeast(0)
-        // What the process does outside actions per second: taken out of the actions running meanwhile.
-        if (lastBaseAt > 0) Energy.background(base, now - lastBaseAt)
-        lastBaseAt = now
+        // The limited-network core runs in its own process (already charged to its kind, see Limited): only the
+        // sample's CPU time gets it, so the CPU chart and tile show all the app's work.
+        val limited = app.borderless.core.Limited.cpuTotalMs
+        val limitedDelta = (limited - lastLimitedCpuMs).coerceAtLeast(0)
+        lastLimitedCpuMs = limited
+        // What the process does outside actions per awake second (the uptime clock, like the actions' CPU split):
+        // taken out of the actions running meanwhile.
+        val up = android.os.SystemClock.uptimeMillis()
+        if (lastBaseAt > 0) Energy.background(base, up - lastBaseAt)
+        lastBaseAt = up
         // Split by how long the app was open: that part is its screens, the rest the core at work.
         val ui = (base * takeVisibleShare(now)).toLong()
         addCost(Kind.UI_BASE, radioMs = 0, cpuMs = ui, mj = Energy.estimateMj(ui, 0, false))
@@ -153,9 +164,13 @@ object Activity {
         StatsDb.power(
             StatsDb.PowerRow(
                 ts = now, battery = Power.batteryPercent, charging = Power.charging, screen = Power.screenOn,
-                saver = Power.powerSave, metered = Power.metered, cpuMs = cpuDelta, pssKb = pssKb,
+                saver = Power.powerSave, metered = Power.metered, cpuMs = cpuDelta + limitedDelta, pssKb = pssKb,
                 capacityMah = Power.capacityMah, mv = Power.voltageMv,
             )
         )
+        // Android's own accounting over the same stretch (calibrates the CPU power, see SystemPower).
+        val system = SystemPower.take()
+        SystemPower.delta(lastSystem, system)?.let { StatsDb.sysPower(now, it) }
+        lastSystem = system
     }
 }

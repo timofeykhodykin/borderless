@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version 2.0.0" src="https://img.shields.io/badge/version-2.0.0-E0654D">
+  <img alt="Version 3.0.0" src="https://img.shields.io/badge/version-3.0.0-E0654D">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-3A3436">
   <img alt="Xray-core v26.10.10" src="https://img.shields.io/badge/Xray--core-v26.10.10-3A3436">
   <img alt="Kotlin, Jetpack Compose" src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-3A3436">
@@ -40,8 +40,17 @@ choice?* The app answers it in practice — servers are checked only when a chec
 traffic the phone sends anyway, scans stop as soon as the answer is known, and every decision's cost is measured on
 the device itself (CPU time, radio time, battery current) and shown in its statistics. It is a personal technical
 experiment, published as is, without any warranty and without any service behind it: it ships no servers and
-connects only to the servers its user adds. Use it only in line with the laws and the network rules that apply to
-you.
+connects only to the servers its user adds. It is not an advertisement and does not promote any means or ways of
+network access: it offers, sells or distributes no servers, subscriptions or access to them, and calls on no one to
+use such means. Use it only in line with the laws and the network rules that apply to you.
+
+**On link formats and servers run by others.** Supporting a link format is interoperability, not an endorsement.
+Border(less) reads the links its user already has — including `wdtt://` and `qwdtt://` links (WDTT and WDTT Plus) —
+and nothing more: it does not create, host, operate, sell or distribute such servers, credentials or access to
+them, is not affiliated with WDTT or WDTT Plus, and includes none of their software. Such a link is a set of
+credentials for a server run by someone else: using it means trusting that operator and following that service's
+rules. Any server you add stays your own choice and responsibility, as does using the app within the law and the
+rules of the networks it connects to.
 
 <details>
 <summary>О проекте (по-русски)</summary>
@@ -53,7 +62,17 @@ Border(less) — исследовательский proof of concept для од
 решения измеряется на самом устройстве (время процессора, время работы радиомодуля, ток батареи) и видна в
 статистике. Это личный технический эксперимент, опубликованный «как есть», без каких-либо гарантий и без какого-либо
 сервиса за ним: в приложении нет своих серверов, оно подключается только к серверам, которые добавил сам
-пользователь. Используйте его только в соответствии с законами и правилами сетей, которые к вам применимы.
+пользователь. Проект не является рекламой и не популяризирует никакие средства и способы доступа к
+сети: он не предлагает, не продаёт и не распространяет никаких серверов, подписок или доступа к ним и никого не
+призывает ими пользоваться. Используйте его только в соответствии с законами и правилами сетей, которые к вам применимы.
+
+**О форматах ссылок и чужих серверах.** Поддержка формата ссылки — это совместимость, а не одобрение. Border(less)
+читает ссылки, которые у пользователя уже есть, — в том числе `wdtt://` и `qwdtt://` (WDTT и WDTT Plus), — и не
+более: он не создаёт, не размещает, не обслуживает, не продаёт и не распространяет такие серверы, доступы или
+учётные данные, не связан с WDTT и WDTT Plus и не содержит их программ. Такая ссылка — это учётные данные сервера,
+которым управляет кто-то другой: пользуясь ею, вы доверяете этому оператору и соблюдаете правила его сервиса. Любой
+добавленный сервер остаётся вашим выбором и вашей ответственностью — как и использование приложения в рамках закона
+и правил сетей, к которым оно подключается.
 
 </details>
 
@@ -82,14 +101,16 @@ browser fingerprint. They are still used when nothing better answers.
 **Limited network.** When no server answers but the phone still reaches the domain zone's own sites, the app
 recognises a limited network: it says so (status, notification, a band on the charts), keeps traffic going
 without the tunnel (or paused, as you chose), and checks servers less often — the ones that answered in such a
-network every 30 seconds, all of them after 1, 2, then every 5 minutes — instead of draining the battery.
+network every 30 seconds, all of them after 1, 2, then every 5 minutes — instead of draining the battery. It also
+keeps track of which of your servers reach out from such a network and prefers those when it connects again.
 
 **Servers of one country.** A globe button limits everything — choice, checks, failover — to the servers of the
 countries you pick (by the server's name, else its address); the list can be sorted by name, by how often you
 picked a country or by how reliably its servers answer.
 
 **Protocols.** VLESS (Reality, Vision, XHTTP, gRPC, WebSocket, HTTPUpgrade, mKCP), VMess, Trojan, Shadowsocks
-(incl. 2022), Hysteria2 (obfs, port hopping), WireGuard, SOCKS5 and any Xray JSON config, including chains through
+(incl. 2022), Hysteria2 (obfs, port hopping), WireGuard, SOCKS5, WDTT links (`wdtt://`, `qwdtt://` — the plain,
+WDTT Plus and qwdtt forms; WireGuard carried by them) and any Xray JSON config, including chains through
 `dialerProxy`.
 
 **Subscriptions.** base64, plain lists of links or Xray JSON; name, traffic and expiry from the provider's

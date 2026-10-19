@@ -179,11 +179,11 @@ private fun calendarColors() = androidx.compose.material3.DatePickerDefaults.col
     weekdayContentColor = Palette.textMuted,
     yearContentColor = Palette.text,
     currentYearContentColor = Palette.accentStrong,
-    selectedYearContentColor = androidx.compose.ui.graphics.Color.White,
+    selectedYearContentColor = Palette.onAccent,
     selectedYearContainerColor = Palette.accent,
     dayContentColor = Palette.text,
     disabledDayContentColor = Palette.textMuted.copy(alpha = 0.5f),
-    selectedDayContentColor = androidx.compose.ui.graphics.Color.White,
+    selectedDayContentColor = Palette.onAccent,
     selectedDayContainerColor = Palette.accent,
     todayContentColor = Palette.accentStrong,
     todayDateBorderColor = Palette.accent,
@@ -195,7 +195,7 @@ private fun calendarColors() = androidx.compose.material3.DatePickerDefaults.col
 @Composable
 private fun clockColors() = androidx.compose.material3.TimePickerDefaults.colors(
     clockDialColor = Palette.card,
-    clockDialSelectedContentColor = androidx.compose.ui.graphics.Color.White,
+    clockDialSelectedContentColor = Palette.onAccent,
     clockDialUnselectedContentColor = Palette.text,
     selectorColor = Palette.accent,
     containerColor = Palette.background,

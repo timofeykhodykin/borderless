@@ -98,6 +98,8 @@ class Engine(private val host: Host) {
         data object StrategyChanged : Event
         /** Servers of chosen countries only, or any again (see [AppSettings.countries], CountryFilter). */
         data object CountryChanged : Event
+        /** A server's country was set by hand (or reset to automatic): a country filter may no longer cover it. */
+        data object ServerCountryChanged : Event
     }
 
     private enum class Mode { PROXY, DIRECT, PAUSE }
@@ -242,6 +244,7 @@ class Engine(private val host: Host) {
     private var costStart = 0L
     private var costCpu = 0L
     private var costAttributed = 0L
+    private var costLimited = 0L
     private var costBytes = 0L
     private var costServer: String? = null
 
@@ -296,6 +299,7 @@ class Engine(private val host: Host) {
         scope.cancel()
         Errors.guard("statistics", Unit, show = false) { endCut(null) }
         Errors.guard("traffic stats", Unit, show = false) { readTraffic(); flushTraffic() }
+        Limited.disconnect()
         core.stop()
     }
 
@@ -309,7 +313,10 @@ class Engine(private val host: Host) {
         val direct = t["direct"] ?: (0L to 0L)
         val now = System.currentTimeMillis()
         val bytes = proxy.first + proxy.second + direct.first + direct.second
-        if (lastReadAt == 0L || bytes * 1000 >= QUIET_RATE * (now - lastReadAt).coerceAtLeast(1000)) lastBusyAt = now
+        val span = (now - lastReadAt).coerceAtLeast(1000)
+        if (lastReadAt == 0L || bytes * 1000 >= QUIET_RATE * span) lastBusyAt = now
+        // A limited-network server's core opens more streams when traffic rises, fewer when it stays low (LimitedPower).
+        if (current?.limited == true && mode == Mode.PROXY && lastReadAt != 0L) Limited.setRate((proxy.first + proxy.second) * 1000 / span)
         lastReadAt = now
         window.addLast(longArrayOf(now, proxy.first, proxy.second))
         while (window.isNotEmpty() && window.first()[0] < now - 60_000L) window.removeFirst()
@@ -327,6 +334,7 @@ class Engine(private val host: Host) {
             costStart = if (cur != null) now else 0L
             costCpu = android.os.Process.getElapsedCpuTime()
             costAttributed = Energy.attributedTotalMs
+            costLimited = Limited.cpuTotalMs
             costBytes = 0
             costServer = cur?.id
         }
@@ -334,7 +342,9 @@ class Engine(private val host: Host) {
         costBytes += bytes
         if (now - costStart < COST_WINDOW_MS) return
         val quiet = !Activity.uiVisible && Activity.uiChangedAt < costStart && !Scanner.isRunning && Scanner.lastActiveAt < costStart
-        val cpu = android.os.Process.getElapsedCpuTime() - costCpu - (Energy.attributedTotalMs - costAttributed)
+        // A limited-network server's core works in its own process: its CPU time belongs to the class as well.
+        val cpu = android.os.Process.getElapsedCpuTime() - costCpu - (Energy.attributedTotalMs - costAttributed) +
+            (Limited.cpuTotalMs - costLimited)
         if (quiet && costBytes >= COST_MIN_BYTES && cpu >= 0) {
             StatsDb.coreCost(now, ProtocolCost.of(cur).key, costBytes, cpu)
             if (settings.verboseLog) AppLog.debug(TAG, "core cost: ${ProtocolCost.of(cur).key}, ${costBytes / 1024} KB, $cpu ms CPU")
@@ -372,7 +382,10 @@ class Engine(private val host: Host) {
      */
     private fun weigh(srv: Server, ms: Int, cheapest: Double, fastest: Int): Double {
         val base = if (settings.ecoOn) ProtocolCost.adjusted(ms, ProtocolCost.factor(srv), cheapest, fastest) else ms.toDouble()
-        return if (settings.strategy == Strategy.STABLE) ProtocolWeights.stability(ProtocolWeights.of(srv)).apply(base) else base
+        val weighted = if (settings.strategy == Strategy.STABLE) ProtocolWeights.stability(ProtocolWeights.of(srv)).apply(base) else base
+        // Limited-network servers carry traffic but cost much more battery, so any ordinary server that
+        // answers wins over them: they are only ever chosen when nothing ordinary does (see Limited).
+        return if (srv.limited) weighted * LIMITED_PENALTY + LIMITED_PENALTY_MS else weighted
     }
 
     /** Writes the pending traffic, the proxied part counted for the server in use (see [switchTo]). */
@@ -404,7 +417,7 @@ class Engine(private val host: Host) {
                     Event.NetworkChanged -> onNetworkChanged()
                     is Event.Validated -> onValidated(event.yes)
                     Event.ScreenOn -> onScreenOn()
-                    Event.ScreenOff -> runDeferred()
+                    Event.ScreenOff -> { if (current?.limited == true) Limited.repace(); runDeferred() }
                     is Event.Select -> select(event.serverId)
                     Event.FindBest -> findBest()
                     is Event.PingAll -> pingAll(event.toBest)
@@ -419,6 +432,7 @@ class Engine(private val host: Host) {
                     is Event.Disabled -> if (event.serverId == current?.id && mode == Mode.PROXY && !Repo.isActive(event.serverId)) failover()
                     Event.StrategyChanged -> onStrategyChanged()
                     Event.CountryChanged -> onCountryChanged()
+                    Event.ServerCountryChanged -> onServerCountryChanged()
                     Event.RestartCore -> restartCore()
                     Event.ServersChanged -> if (mode == Mode.DIRECT || mode == Mode.PAUSE) { if (nothingToUse()) enterFallback(noNetwork) else retry() }
                 }
@@ -483,6 +497,7 @@ class Engine(private val host: Host) {
                     else -> watch()
                 }
                 if (mode == Mode.PROXY && failStreak == 0) runDeferred()
+                if (mode == Mode.PROXY) widerPulse()
             }
             Mode.DIRECT, Mode.PAUSE -> if (System.currentTimeMillis() >= nextRetryAt) retry() else pulse()
             null -> initialConnect(null)
@@ -687,8 +702,9 @@ class Engine(private val host: Host) {
         }
         // The last server answered minutes ago: start on it straight away (one core start instead of two) and let the
         // check right after the switch decide; if it fails, the failover takes over as usual.
+        // Never a limited-network server: those are the fallback when nothing ordinary works, not a place to start.
         val recent = Repo.server(preferredId)?.takeIf { srv ->
-            settings.policy.failover && Repo.isActive(srv) &&
+            settings.policy.failover && Repo.isActive(srv) && !srv.limited &&
                 Repo.pings.value[srv.id]?.let { it.ok && System.currentTimeMillis() - it.at < RECENT_START_MS } == true
         }
         if (recent != null) {
@@ -714,7 +730,29 @@ class Engine(private val host: Host) {
         AppLog.event(LText.of(R.string.ev_searching))
         val server = findWorking(preferredId) ?: AutoPool.rescue(null)
         if (server != null && switchTo(server, LText.of(R.string.ann_connected))) StatsDb.event(StatsDb.Event.INITIAL, server.id, pos = picked(server))
-        else enterFallback()
+        else if (!limitedFallback(StatsDb.Event.INITIAL)) enterFallback()
+    }
+
+    /**
+     * Limited-network servers when nothing ordinary works. Tried after [findWorking] and [AutoPool.rescue],
+     * so they are the last resort; on a limited network (where ordinary servers don't reach) it is reached quickly.
+     * Starting a limited-network server's core is the probe: [switchTo] returns false if it can't get a config. Off when the
+     * user turned automatic use off, or the core isn't in this build.
+     */
+    private suspend fun limitedFallback(event: StatsDb.Event, avoid: String? = null): Boolean {
+        if (!Limited.available || !settings.limitedAuto) return false
+        val pings = Repo.pings.value
+        val found = Repo.limitedServers.filter { it.id != avoid }
+            .sortedWith(compareByDescending<Server> { pings[it.id]?.lastOkAt ?: 0L }.thenBy { pings[it.id]?.failStreak ?: 0 })
+        if (found.isEmpty()) return false
+        AppLog.event(LText.of(R.string.ev_limited_trying))
+        for (srv in found.take(LIMITED_TRY)) {
+            if (switchTo(srv, LText.of(R.string.ann_limited))) {
+                StatsDb.event(event, srv.id, avoid)
+                return true
+            }
+        }
+        return false
     }
 
     /**
@@ -723,8 +761,12 @@ class Engine(private val host: Host) {
      */
     private suspend fun switchTo(server: Server, announce: LText?, cause: String? = null): Boolean {
         if (cause != null && mode == Mode.PROXY) beginCut(cause)
+        // Limited-network servers get their outbound from a running core (its WireGuard config); ordinary ones from the link.
+        // Moving to an ordinary server stops any core still up.
+        if (!server.limited) Limited.disconnect()
         val outbounds = try {
-            LinkParser.parse(server.link).outbounds
+            if (server.limited) Limited.connect(server) ?: throw Exception(Limited.failureText())
+            else LinkParser.parse(server.link).outbounds
         } catch (e: Exception) {
             AppLog.event(LText.of(R.string.ev_bad_config, label(server), e.message.orEmpty()), AppLog.Kind.ERROR)
             Repo.recordPing(server.id, null)
@@ -744,6 +786,7 @@ class Engine(private val host: Host) {
             offline = false
             unanswered = false
             connectedLimited = limited
+            widerAt = if (server.limited && limited) System.currentTimeMillis() + WIDER_ON_MS else Long.MAX_VALUE
             lastDownAt = System.currentTimeMillis()
             lastBusyAt = lastDownAt
             // A fresh core has loaded the routing lists.
@@ -786,6 +829,7 @@ class Engine(private val host: Host) {
         Repo.activeServers.isEmpty() && (Repo.servers.value.isEmpty() || !AutoPool.enabled)
 
     private suspend fun enterFallbackMode() {
+        Limited.disconnect()
         val m = if (settings.noServerAction == NoServerAction.PAUSE) Mode.PAUSE else Mode.DIRECT
         // The last bytes of the server we are leaving are written for it.
         Errors.guard("traffic stats", Unit, show = false) { readTraffic(); flushTraffic() }
@@ -897,6 +941,33 @@ class Engine(private val host: Host) {
             comeBack()
         } else {
             schedulePulse()
+        }
+    }
+
+    /** Next look whether the wider internet answers again (on a limited-network server in a limited network). */
+    private var widerAt = Long.MAX_VALUE
+
+    /** On a limited-network server the fallback chose (not by hand). */
+    private fun leavingLimited() = current?.limited == true && settings.strategy != Strategy.MANUAL
+
+    /**
+     * On a limited-network server reached in a limited network, the wider internet is looked at directly every
+     * [WIDER_ON_MS] / [WIDER_OFF_MS] (common sites only; the core's keepalives keep the radio awake anyway). The moment
+     * it answers, the ordinary servers are checked at once instead of at the next rescan.
+     */
+    private suspend fun widerPulse() {
+        val now = System.currentTimeMillis()
+        if (now < widerAt) return
+        widerAt = Long.MAX_VALUE
+        if (!leavingLimited()) return
+        if (NetCheck.pulse(NetCheck.Reach.LIMITED) == NetCheck.Reach.FULL) {
+            AppLog.event(LText.of(R.string.ev_wider_back), AppLog.Kind.GOOD)
+            limited = false
+            AutoPool.resetBackoff()
+            lastRescanAt = 0
+            maybeStartRescan(busy = true, now = now, urgent = true)
+        } else {
+            widerAt = now + if (Power.screenOn) WIDER_ON_MS else WIDER_OFF_MS
         }
     }
 
@@ -1073,7 +1144,7 @@ class Engine(private val host: Host) {
         publish(Phase.SEARCHING)
         val server = findWorking(null, avoid = lost?.id) ?: AutoPool.rescue(lost?.id)
         if (server != null && switchTo(server, LText.of(R.string.ann_switched))) StatsDb.event(StatsDb.Event.FAILOVER, server.id, lost?.id, pos = picked(server))
-        else enterFallback()
+        else if (!limitedFallback(StatsDb.Event.FAILOVER, lost?.id)) enterFallback()
     }
 
     private suspend fun retry() {
@@ -1104,7 +1175,7 @@ class Engine(private val host: Host) {
         if (limited && !thin) limitedFullAt = now + LIMITED_FULL_MS[minOf(limitedMisses++, LIMITED_FULL_MS.lastIndex)]
         val server = findWorking(settings.lastServerId, only = only) ?: if (thin) null else AutoPool.rescue(null)
         if (server != null && switchTo(server, LText.of(R.string.ann_back))) StatsDb.event(StatsDb.Event.RETRY, server.id, pos = picked(server))
-        else enterFallback()
+        else if (!limitedFallback(StatsDb.Event.RETRY)) enterFallback()
     }
 
     /**
@@ -1121,12 +1192,14 @@ class Engine(private val host: Host) {
 
     private suspend fun findWorking(preferredId: String?, avoid: String? = null, only: List<Server>? = null): Server? = coroutineScope {
         lastPick = null
-        if (Repo.activeServers.isEmpty()) return@coroutineScope null
+        // Ordinary servers only: a limited-network server is reached through [limitedFallback] when none of them works
+        // (its pings from health checks through its core would otherwise make it the preferred, instant pick).
+        if (Repo.activeOrdinary.isEmpty()) return@coroutineScope null
         val startedAt = System.currentTimeMillis()
         val ok = ConcurrentHashMap<String, Int>()
         val decided = CompletableDeferred<Unit>()
         // A scan may already be running (e.g. started when the app was opened): use what it found.
-        val active = Repo.activeServers.map { it.id }.toSet()
+        val active = Repo.activeOrdinary.map { it.id }.toSet()
         Repo.pings.value.forEach { (id, p) ->
             if (p.ok && startedAt - p.at < FRESH_MS && id != avoid && id in active) ok[id] = p.ms!!
         }
@@ -1138,7 +1211,7 @@ class Engine(private val host: Host) {
         val collector = launch(start = CoroutineStart.UNDISPATCHED) {
             Scanner.results.collect { (id, ms) ->
                 // Hidden servers probed along with the scan (auto-visibility) are not candidates.
-                if (ms == null || id == avoid || !Repo.isActive(id)) return@collect
+                if (ms == null || id == avoid || id !in active) return@collect
                 ok[id] = ms
                 if (id == preferredId) decided.complete(Unit)
                 else if (ok.size == 1) launch { delay(GRACE_MS); decided.complete(Unit) }
@@ -1158,7 +1231,7 @@ class Engine(private val host: Host) {
         // Normally the scan goes on so the map fills in; the battery saving mode and careful checks stop it here.
         if (settings.ecoOn || settings.carefulScans) Scanner.finishEarly(Activity.Kind.SCAN_ENGINE)
 
-        ok.keys.removeAll { !Repo.isActive(it) }
+        ok.keys.removeAll { !Repo.isActive(it) || Repo.server(it)?.limited == true }
         if (limited) limitedOk += ok.keys
         // A server lost lately is taken only if nothing else answered (it came back again and again on bad networks).
         val now = System.currentTimeMillis()
@@ -1184,15 +1257,28 @@ class Engine(private val host: Host) {
     }
 
     /** [busy]: the user's traffic is flowing (the radio is awake anyway). */
-    private fun maybeStartRescan(busy: Boolean) {
+    private fun maybeStartRescan(busy: Boolean, now: Long = System.currentTimeMillis(), urgent: Boolean = false) {
         val s = settings
         val p = s.policy
+        // On a limited-network server (the fallback chose it): keep looking for an ordinary one under every automatic
+        // strategy — On failure and battery saving too — even with the screen off or the phone idle.
+        val onLimited = leavingLimited()
+        if (onLimited) {
+            if (now - lastRescanAt < LIMITED_RESCAN_MS) return
+            lastRescanAt = now
+            AppLog.debug(TAG, "on a limited-network server: rescan of the ordinary servers" + if (urgent) " (the internet is back)" else "")
+            // The internet just came back: all at once (a background scan spaces its probes 2–6 s apart).
+            scope.launch {
+                Scanner.start(reason = if (urgent) Activity.Kind.SCAN_ENGINE else Activity.Kind.SCAN_BACKGROUND).join()
+                send(Event.ScanFinished)
+            }
+            return
+        }
         if (!p.optimize) return
         if ((s.pauseScansScreenOff || s.ecoOn) && !Power.screenOn) return
         // Battery saving mode: a faster server only matters while traffic flows, and then the radio is
         // awake anyway; with the phone idle, wait.
         if (s.ecoOn && !busy) return
-        val now = System.currentTimeMillis()
         if (now - lastRescanAt < p.rescanMin * 60_000L * Power.stretch()) return
         lastRescanAt = now
         if (s.ecoOn) {
@@ -1238,7 +1324,7 @@ class Engine(private val host: Host) {
         val dayAgo = System.currentTimeMillis() - 86_400_000L
         val now = System.currentTimeMillis()
         val known = Repo.activeServers
-            .filter { it.id != cur.id && (penalty[it.id] ?: 0L) < now }
+            .filter { it.id != cur.id && !it.limited && (penalty[it.id] ?: 0L) < now }
             .mapNotNull { srv -> pings[srv.id]?.takeIf { it.lastOkAt >= dayAgo && it.steady }?.usual?.let { srv to it } }
         if (known.isEmpty()) return emptyList()
         // Judged like considerSwitch in this mode: latency weighted by the protocol's energy cost.
@@ -1257,12 +1343,14 @@ class Engine(private val host: Host) {
     private fun gainPossible(): Boolean {
         val p = settings.policy
         val cur = current ?: return true
+        // On a limited-network server (expensive core): always look for an ordinary server to move back to.
+        if (cur.limited) return true
         val pings = Repo.pings.value
         val curMs = pings[cur.id]?.typical ?: lastPing ?: return true
         // A server of a less steady kind may be left for a slower one (see weigh): don't skip the rescan.
         if (settings.strategy == Strategy.STABLE && ProtocolWeights.stability(ProtocolWeights.of(cur)).traits.isNotEmpty()) return true
         val dayAgo = System.currentTimeMillis() - 86_400_000L
-        val best = Repo.activeServers.filter { it.id != cur.id }
+        val best = Repo.activeServers.filter { it.id != cur.id && !it.limited }
             .mapNotNull { srv -> pings[srv.id]?.takeIf { it.lastOkAt >= dayAgo && it.steady }?.usual }
             .minOrNull() ?: return true
         return best <= curMs * (100 - p.gainPercent) / 100 && curMs - best >= p.gainMs
@@ -1275,17 +1363,25 @@ class Engine(private val host: Host) {
     private suspend fun considerSwitch(chosen: Boolean = false) {
         val p = settings.policy
         val cur = current ?: return
-        if (mode != Mode.PROXY || !p.optimize) return
+        // Leaving a limited-network server for any working ordinary one is always worth it (the core costs battery): no
+        // minimum stay, no speed floor, no two-rescan confirmation, under every automatic strategy.
+        val leavingLimited = leavingLimited()
+        if (mode != Mode.PROXY || !(p.optimize || leavingLimited)) return
         val now = System.currentTimeMillis()
-        if (!chosen && now - connectedAt < p.minStayMin * 60_000L) return
+        val immediate = chosen || leavingLimited
+        if (!immediate && now - connectedAt < p.minStayMin * 60_000L) return
         val pings = Repo.pings.value
-        val curMs = pings[cur.id]?.usual ?: lastPing ?: return
+        val curMs = pings[cur.id]?.usual ?: lastPing ?: if (leavingLimited) Int.MAX_VALUE else return
         penalty.entries.removeAll { it.value < now }
         // Stable values only (1.0.0 switched on one sample, once to a server with 4 of its last 5 probes failed):
         // the median of a candidate's last successes, this rescan's included, and no failure among its last results.
+        // Never a limited-network server as the target (they are a fallback, not something to optimise towards).
+        // Leaving a limited-network server, an answer in this rescan is enough: failures from the limited network
+        // itself would otherwise keep every ordinary server "unsteady" for five more rescans (the target is probed
+        // once more right before the move).
         val others = Repo.activeServers
-            .filter { it.id != cur.id && it.id !in penalty }
-            .mapNotNull { srv -> pings[srv.id]?.takeIf { it.at >= lastRescanAt && it.steady }?.let { srv to it.usual!! } }
+            .filter { it.id != cur.id && !it.limited && it.id !in penalty }
+            .mapNotNull { srv -> pings[srv.id]?.takeIf { it.at >= lastRescanAt && (if (leavingLimited) it.ok else it.steady) }?.let { srv to it.usual!! } }
         if (others.isEmpty()) {
             winner = null
             if (chosen) AppLog.event(LText.of(R.string.ev_strategy_stay, LText.of(Eco.label(settings.strategy)), label(cur)), AppLog.Kind.GOOD)
@@ -1303,7 +1399,7 @@ class Engine(private val host: Host) {
         // Not asked for by the user, and not under Fastest (asked for speed): below SPEED_FLOOR_MS a faster server
         // isn't felt (chats, pages; streams aren't limited by the round trip) — only a steadier kind of connection
         // still counts; and the same winner must come out of two rescans in a row (servers' own pings jump).
-        if (gainOk && !chosen && settings.strategy != Strategy.FASTEST) {
+        if (gainOk && !immediate && settings.strategy != Strategy.FASTEST) {
             val steadier = settings.strategy == Strategy.STABLE &&
                 ProtocolWeights.stability(ProtocolWeights.of(cur)).traits.size > ProtocolWeights.stability(ProtocolWeights.of(best.first)).traits.size
             if (curMs < SPEED_FLOOR_MS && !steadier) {
@@ -1324,14 +1420,20 @@ class Engine(private val host: Host) {
         )
         if (gainOk) {
             val announce = when {
+                leavingLimited -> LText.of(R.string.ann_limited_off)
                 best.second < curMs -> LText.of(R.string.ann_faster, curMs, best.second)
                 eco -> LText.of(R.string.ann_cheaper, LText.raw(ProtocolCost.of(cur).key), LText.raw(ProtocolCost.of(best.first).key))
                 // Stable left a server of a less steady kind for a slightly slower one.
                 else -> LText.of(R.string.ann_steadier, curMs, best.second)
             }
-            if (chosen) {
-                if (switchTo(best.first, announce, "STRATEGY")) StatsDb.event(StatsDb.Event.OPTIMIZE, best.first.id, cur.id)
-                else switchTo(cur, null)
+            if (immediate) {
+                val cause = if (leavingLimited && !chosen) "LIMITED_OFF" else "STRATEGY"
+                if (leavingLimited && Scanner.probeOne(best.first) == null) {
+                    AppLog.debug(TAG, "leaving the limited-network server: ${best.first.name} didn't answer again, staying")
+                    return
+                }
+                if (switchTo(best.first, announce, cause)) StatsDb.event(StatsDb.Event.OPTIMIZE, best.first.id, cur.id)
+                else if (!leavingLimited) switchTo(cur, null)
             } else {
                 // Not asked for by the user: wait for a quiet moment so open connections aren't cut mid-way.
                 // A later scan may pick another target; the waiting time keeps counting from the first decision.
@@ -1398,6 +1500,7 @@ class Engine(private val host: Host) {
      * move if their rules say so — the minimum stay doesn't apply to a choice the user just made.
      */
     private suspend fun onStrategyChanged() {
+        if (current?.limited == true) Limited.repace()
         val s = settings
         AppLog.debug(TAG, "strategy: ${s.strategy}")
         if (mode == null) return
@@ -1497,10 +1600,35 @@ class Engine(private val host: Host) {
         }
     }
 
+    /**
+     * A server's country was set by hand ("Set country" in a server's menu) or reset to automatic. With a country
+     * filter on, the server in use may have just fallen out of the chosen countries: leave it the way a change of the
+     * filter would (see [onCountryChanged]) — the rest of the list is unaffected and needs no scan.
+     */
+    private suspend fun onServerCountryChanged() {
+        val s = settings
+        if (s.countries.isEmpty() || mode == null) return
+        if (mode != Mode.PROXY) {
+            if (!noNetwork) retry()
+            return
+        }
+        val cur = current ?: return
+        if (Repo.isActive(cur)) return
+        AppLog.event(LText.of(R.string.ev_server_country_out, label(cur), Countries.labels(s.countries)), AppLog.Kind.WARN)
+        publish(Phase.SEARCHING)
+        val server = findWorking(null)
+        if (server != null && switchTo(server, LText.of(R.string.ann_country), "COUNTRY")) {
+            StatsDb.event(StatsDb.Event.MANUAL, server.id, cur.id, pos = picked(server))
+        } else {
+            enterFallback()
+        }
+    }
+
     // ------------------------------------------------------------------ events
 
     private suspend fun select(id: String) {
         val server = Repo.server(id) ?: return
+        AppLog.debug(TAG, "picked by hand: ${server.name} (${server.protocol})")
         // Picking a server by hand switches to the Manual strategy: the engine stays on it until the
         // user chooses an automatic strategy again. Manual goes back to this server later.
         if (settings.strategy != Strategy.MANUAL || settings.manualServerId != id) {
@@ -1535,10 +1663,13 @@ class Engine(private val host: Host) {
 
     private suspend fun afterBest() {
         val pings = Repo.pings.value
-        val ok = Repo.activeServers.mapNotNull { srv -> pings[srv.id]?.takeIf { it.ok }?.let { srv.id to it.ms!! } }.toMap()
+        // Ordinary servers only (a limited-network server's ping can be old, and it is reached only by the fallback).
+        val ok = Repo.activeOrdinary.mapNotNull { srv -> pings[srv.id]?.takeIf { it.ok }?.let { srv.id to it.ms!! } }.toMap()
         val best = Repo.server(choose(ok))
         if (best == null) {
-            enterFallback()
+            // Nothing ordinary answers: a limited-network server in use stays, otherwise the usual last resort.
+            if (current?.limited == true && mode == Mode.PROXY) publish(Phase.CONNECTED)
+            else if (!limitedFallback(StatsDb.Event.BEST)) enterFallback()
         } else if (best.id != current?.id || mode != Mode.PROXY) {
             val from = current?.id
             if (switchTo(best, LText.of(R.string.ann_best), "BEST")) StatsDb.event(StatsDb.Event.BEST, best.id, from) else failover()
@@ -1660,6 +1791,7 @@ class Engine(private val host: Host) {
      * server: check now instead of at the next timer.
      */
     private suspend fun onScreenOn() {
+        if (current?.limited == true) Limited.repace()
         if (mode == Mode.PROXY) {
             val now = System.currentTimeMillis()
             if (pending == null && failStreak == 0 && !checkSoon && now - lastDownAt >= WAKE_QUIET_MS && now - lastOkCheckAt >= WAKE_STALE_MS) {
@@ -1706,6 +1838,9 @@ class Engine(private val host: Host) {
                 noServers = (phase == Phase.DIRECT || phase == Phase.PAUSED) && nothingToUse(),
                 paused = mode == Mode.PAUSE,
                 unanswered = phase == Phase.CONNECTED && unanswered,
+                // A server picked by hand stays the visible choice while the engine is not connected to it
+                // (a limited-network one whose core can't start, for instance).
+                selectedId = settings.manualServerId?.takeIf { settings.strategy == Strategy.MANUAL && Repo.isActive(it) },
             )
         )
     }
@@ -1800,10 +1935,22 @@ class Engine(private val host: Host) {
         private const val PULSE_OFF_MS = 20_000L
         private const val PULSE_LIMITED_ON_MS = 10_000L
         private const val PULSE_LIMITED_OFF_MS = 30_000L
+        /** On a limited-network server in a limited network: how often the wider internet is looked at (screen on / off). */
+        private const val WIDER_ON_MS = 30_000L
+        private const val WIDER_OFF_MS = 120_000L
+        /** On a limited-network server: how often the ordinary servers are checked again (any strategy but Manual). */
+        private const val LIMITED_RESCAN_MS = 5 * 60_000L
         /** The screen turning on starts a retry unless one started this recently. */
         private const val SCREEN_RETRY_GAP_MS = 5_000L
         /** A server that answered this recently is started on at once when the tunnel is turned on. */
         private const val RECENT_START_MS = 10 * 60_000L
+
+        /** Limited-network servers are weighed far worse than any ordinary one, so they lose unless nothing
+         * ordinary answered (see [weigh]). */
+        private const val LIMITED_PENALTY = 100.0
+        private const val LIMITED_PENALTY_MS = 100_000.0
+        /** At most this many limited-network servers are tried in one fallback (each one starts its core). */
+        private const val LIMITED_TRY = 2
         /** What waits for a scan ([scanThen]). */
         private const val AFTER_STRATEGY = "strategy"
         private const val AFTER_BEST = "best"

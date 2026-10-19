@@ -65,6 +65,8 @@ private class ActivityData(
     val protocols: Map<String, ProtocolCost.Measured>,
     /** Each class's core CPU against all classes at the same traffic, with its number of windows. */
     val protocolsRelative: Map<String, Pair<Double, Int>>,
+    /** The app's estimated energy over time ([ActivityMath.energyOverTime]). */
+    val energy: List<ActivityMath.EnergyBucket>,
 ) {
     /** Everything shaded behind the activity charts (see [stateBands]). */
     val bands: List<Band> by lazy { stateBands(power) + bands(segments, maxOf(from, dataStart), to) + zones.eco }
@@ -83,6 +85,8 @@ private suspend fun loadActivity(context: Context, p: Period, custom: Pair<Long,
         zones,
         StatsDb.coreCostByClass(from, to),
         ProtocolCost.relative(StatsDb.coreCostWindows(from, to)),
+        // From a little earlier: the first write in view needs the one before it to know what stretch it covers.
+        ActivityMath.energyOverTime(StatsDb.activityFlushes(from - ActivityMath.MAX_GAP_MS, to), from, to, BUCKETS),
     )
 }
 
@@ -107,6 +111,7 @@ internal fun ActivityTab(period: Period, custom: Pair<Long, Long>?, tick: Int) {
         }
         item { ActivityTiles(context, d) }
         item { EnergyCard(context, d) }
+        item { EnergyChart(context, d) }
         item { CostCard(context, d.totals, d.measured) }
         item { ProtocolsCard(context, d.protocols, d.protocolsRelative) }
         item { NetworkChart(context, d) }
@@ -183,6 +188,45 @@ private fun rateText(r: ActivityMath.Rate): String =
 @Composable
 private fun pmText(r: ActivityMath.Rate): String =
     r.percentPlusMinus?.let { stringResource(R.string.act_drain_value, "%.2f".format(it)) } ?: stringResource(R.string.act_mah_h, "%.1f".format(r.mahPlusMinus))
+
+/**
+ * The app's estimated battery use over time as an average current while it ran: the whole app and its three largest
+ * parts in the period. Errors of the model are mostly fixed factors (the CPU and radio powers), so the shape is
+ * reliable even where the height is not.
+ */
+@Composable
+private fun EnergyChart(context: Context, d: ActivityData) {
+    if (d.energy.size < 2) return
+    val volts = d.summary.volts ?: app.borderless.data.Energy.VOLTAGE
+    // µA (integer chart points), labelled in mA: mJ / ms = W, / V = A.
+    fun ua(mj: Double, ms: Long) = (mj / ms / volts * 1_000_000).roundToInt()
+    val top = d.energy.flatMap { it.mj.entries }.groupBy({ it.key }, { it.value }).mapValues { it.value.sum() }
+        .entries.sortedByDescending { it.value }.take(3).map { it.key }
+    // The whole app like "best of all" on the ping chart: grey with a pale halo, so the parts running along it (the
+    // largest one often nearly equals it) don't hide it.
+    val all = listOf(
+        Series(
+            context.getString(R.string.act_series_all), Palette.textMuted,
+            d.energy.map { StatsMath.Point(it.t, ua(it.total, it.coveredMs), 0, 1) }, halo = true,
+        )
+    ) + top.mapIndexed { i, part ->
+        Series(
+            context.getString(part.label), SeriesColors[i],
+            d.energy.map { StatsMath.Point(it.t, ua(it.mj[part] ?: 0.0, it.coveredMs), 0, 1) },
+        )
+    }
+    val max = all.maxOf { s -> s.points.maxOf { it.ms ?: 0 } }.toDouble()
+    val unit = stringResource(R.string.act_axis_ma)
+    Card(stringResource(R.string.act_chart_energy), header = { AxisUnit(unit) }) {
+        TimeChart(
+            all, d.from, d.to, YScale.linear(max, integer = false, divide = 1000.0),
+            format = { "%.1f %s".format(it / 1000, unit) }, height = 170.dp,
+            bands = d.bands, resetKey = d.from to d.to, markers = d.zones.strategy,
+            clearLabel = stringResource(R.string.band_clear_phone),
+        )
+        Text(stringResource(R.string.act_chart_energy_note), fontSize = 12.sp, color = Palette.textMuted, modifier = Modifier.padding(top = 8.dp))
+    }
+}
 
 @Composable
 private fun NetworkChart(context: Context, d: ActivityData) {
@@ -268,7 +312,7 @@ private fun Conditions(context: Context, s: ActivityMath.PowerSummary, ecoHours:
 
 @Composable
 private fun Breakdown(context: Context, totals: Map<String, StatsDb.ActivityTotal>) {
-    val rows = Activity.Kind.entries.mapNotNull { k -> totals[k.name]?.takeIf { it.n > 0 }?.let { k to it } }
+    val rows = actionKinds().mapNotNull { k -> totals[k.name]?.takeIf { it.n > 0 }?.let { k to it } }
     if (rows.isEmpty()) return
     Card(stringResource(R.string.act_breakdown)) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -330,11 +374,18 @@ private fun EnergyCard(context: Context, d: ActivityData) {
         Spacer(Modifier.height(10.dp))
         Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
             shares.forEachIndexed { i, sh ->
-                val label = if (sh.kinds.size == 1) stringResource(sh.kinds.first().label) else stringResource(groupLabel(sh.kinds.first()))
+                val label = stringResource(sh.part.label)
                 Column {
                     Row {
                         Column(Modifier.weight(1f)) {
                             Text(label, fontSize = 14.sp, color = Palette.text)
+                            // The limited-network servers' core runs apart from the ordinary one: say which line has what.
+                            val hasLimited = shares.any { it.part == ActivityMath.Part.LIMITED }
+                            when {
+                                sh.part == ActivityMath.Part.LIMITED -> R.string.act_part_limited_sub
+                                sh.part == ActivityMath.Part.TRAFFIC && hasLimited -> R.string.act_part_traffic_sub
+                                else -> null
+                            }?.let { Text(stringResource(it), fontSize = 11.sp, color = Palette.textMuted) }
                             // What to optimise: radio time (do it less often / along with traffic) or CPU.
                             if (sh.radioShare > 0.005) {
                                 val radio = (sh.radioShare * 100).roundToInt()
@@ -355,20 +406,25 @@ private fun EnergyCard(context: Context, d: ActivityData) {
         Text(
             stringResource(
                 R.string.act_energy_note, "%.2f".format(p.cpu.mid), "%.2f".format(p.cell.mid), "%.2f".format(p.wifi.mid),
-                stringResource(if (p.source.startsWith("power_profile")) R.string.act_profile_phone else R.string.act_profile_generic),
+                stringResource(
+                    when {
+                        p.source.endsWith(app.borderless.data.DeviceProfile.CALIBRATED) -> R.string.act_profile_system
+                        p.source.startsWith("power_profile") -> R.string.act_profile_phone
+                        else -> R.string.act_profile_generic
+                    }
+                ),
             ),
             fontSize = 12.sp, color = Palette.textMuted,
         )
     }
 }
 
-private fun groupLabel(first: Activity.Kind): Int = when (first) {
-    Activity.Kind.PING_STALL -> R.string.act_part_ping_checks
-    Activity.Kind.SUB_UPDATE -> R.string.act_part_lookups
-    Activity.Kind.CORE_START -> R.string.act_part_local
-    Activity.Kind.DB_COMMIT -> R.string.act_part_stats
-    else -> first.label
-}
+/**
+ * The kinds shown one by one: discrete actions ([ActivityMath.isAction]), similar ones next to each other (in the
+ * order of the breakdown's parts).
+ */
+private fun actionKinds(): List<Activity.Kind> =
+    ActivityMath.Part.entries.flatMap { it.kinds }.filter(ActivityMath::isAction)
 
 /**
  * What one action of each kind costs: the model's estimate (always) and, with current measurement
@@ -377,8 +433,7 @@ private fun groupLabel(first: Activity.Kind): Int = when (first) {
 @Composable
 private fun CostCard(context: Context, totals: Map<String, StatsDb.ActivityTotal>, measured: List<StatsDb.MeasuredKind>) {
     val real = measured.associateBy { it.kind }
-    val rows = Activity.Kind.entries.filter { it != Activity.Kind.CORE_BASE }
-        .mapNotNull { k -> totals[k.name]?.takeIf { it.n > 0 && it.mj > 0 }?.let { k to it } }
+    val rows = actionKinds().mapNotNull { k -> totals[k.name]?.takeIf { it.n > 0 && it.mj > 0 }?.let { k to it } }
     if (rows.isEmpty()) return
     val col = 82.dp
     Card(stringResource(R.string.act_cost), header = {

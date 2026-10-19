@@ -325,7 +325,8 @@ private fun SettingsRoot(s: AppSettings, subscriptions: Int, onPage: (SettingsPa
         else stringResource(R.string.set_sum_subs, subscriptions, s.subUpdateHours),
         SettingsPage.CONNECTION to stringResource(R.string.set_sum_connection, s.remoteDns.substringAfter("://").substringBefore('/'), s.mtu),
         SettingsPage.INTERFACE to listOfNotNull(
-            stringResource(paletteName(s.palette)), languageLabel(context), stringResource(R.string.set_generic_names).takeIf { s.genericNames },
+            stringResource(paletteName(s.palette)), stringResource(R.string.set_sum_dark).takeIf { Palette.dark },
+            languageLabel(context), stringResource(R.string.set_generic_names).takeIf { s.genericNames },
         ).joinToString(" · "),
         SettingsPage.DIAGNOSTICS to listOfNotNull(
             // Errors waiting to be reported first: the rest is how it is set up.
@@ -366,6 +367,10 @@ private fun ServerPage(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Un
         }
         SwitchRow(stringResource(R.string.set_ping_all_best), stringResource(R.string.set_ping_all_best_sub), s.pingAllSwitches) { v ->
             set { it.copy(pingAllSwitches = v) }
+        }
+        val limited = remember(Repo.servers.value) { Repo.servers.value.count { it.limited } }
+        if (limited > 0) SwitchRow(stringResource(R.string.set_limited_auto), stringResource(R.string.set_limited_auto_sub), s.limitedAuto) { v ->
+            set { it.copy(limitedAuto = v) }
         }
     }
     Section(stringResource(R.string.set_sub_failure)) {
@@ -601,6 +606,16 @@ private fun InterfacePage(s: AppSettings, set: ((AppSettings) -> AppSettings) ->
         if (LocalSettingsQuery.current?.matches(stringResource(R.string.set_palette), *names.toTypedArray()) != false) {
             PaletteChooser(s.palette) { id -> set { it.copy(palette = id) } }
         }
+        // While it follows the system, the dark switch shows what the system has and can't be moved.
+        SwitchRow(
+            stringResource(R.string.set_dark_theme),
+            stringResource(if (s.themeFollowsSystem) R.string.set_dark_theme_system else R.string.set_dark_theme_sub),
+            checked = Palette.dark, enabled = !s.themeFollowsSystem,
+        ) { v -> set { it.copy(darkTheme = v) } }
+        SwitchRow(stringResource(R.string.set_theme_system), stringResource(R.string.set_theme_system_sub), s.themeFollowsSystem) { v ->
+            // Turning it off keeps what is on screen now, so nothing flips under the finger.
+            set { it.copy(themeFollowsSystem = v, darkTheme = if (v) it.darkTheme else Palette.dark) }
+        }
     }
     Section(stringResource(R.string.set_cat_interface)) {
         LanguageRow()
@@ -640,7 +655,7 @@ private fun DiagnosticsPage(s: AppSettings, set: ((AppSettings) -> AppSettings) 
         val errors by app.borderless.data.Errors.unreported.collectAsStateWithLifecycle(0)
         InfoRow(
             stringResource(R.string.set_errors), errors.toString(), stringResource(R.string.set_errors_sub),
-            if (errors > 0) Palette.danger else Palette.textSecondary,
+            if (errors > 0) Palette.danger else Palette.text, strong = true,
         )
         ClearLogRow()
     }
@@ -771,14 +786,21 @@ private fun export(scope: kotlinx.coroutines.CoroutineScope, context: android.co
 
 private fun paletteName(id: String): Int = when (id) {
     "mono" -> R.string.palette_mono
+    "powder" -> R.string.palette_powder
+    "sage" -> R.string.palette_sage
+    "lavender" -> R.string.palette_lavender
+    "sky" -> R.string.palette_sky
     else -> R.string.palette_coral
 }
 
-/** One card per colour scheme: its name and a strip of the colours it uses; the chosen one is outlined. */
+/**
+ * One card per palette: its name and a strip of the colours it uses, in the light or dark version now in effect;
+ * the chosen one is outlined.
+ */
 @Composable
 private fun PaletteChooser(current: String, onPick: (String) -> Unit) {
     Column(Modifier.padding(12.dp), verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)) {
-        app.borderless.ui.theme.Schemes.all.forEach { scheme ->
+        app.borderless.ui.theme.Schemes.all.map { app.borderless.ui.theme.Schemes.byId(it.id, Palette.dark) }.forEach { scheme ->
             val selected = scheme.id == current
             Column(
                 Modifier

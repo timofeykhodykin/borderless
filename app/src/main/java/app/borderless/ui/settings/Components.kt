@@ -248,9 +248,18 @@ fun InfoNote(text: String) {
 
 /** A value to read, not to change; [valueColor] draws attention to it (e.g. errors waiting to be reported). */
 @Composable
-fun InfoRow(title: String, value: String, subtitle: String? = null, valueColor: androidx.compose.ui.graphics.Color = Palette.textSecondary) =
+fun InfoRow(
+    title: String, value: String, subtitle: String? = null, valueColor: androidx.compose.ui.graphics.Color = Palette.textSecondary,
+    /** A number that matters (a count): bold in the numbers' font, kept clear of a long subtitle. */
+    strong: Boolean = false,
+) =
     RowBase(title, subtitle, null, search = value) {
-        Text(value, fontSize = 15.sp, color = valueColor)
+        if (strong) {
+            Text(
+                value, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = app.borderless.ui.theme.Display,
+                color = valueColor, modifier = Modifier.padding(start = 10.dp),
+            )
+        } else Text(value, fontSize = 15.sp, color = valueColor)
     }
 
 @Composable

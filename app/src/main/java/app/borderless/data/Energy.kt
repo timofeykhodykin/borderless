@@ -1,6 +1,7 @@
 package app.borderless.data
 
 import android.os.Process
+import android.os.SystemClock
 import app.borderless.core.Power
 
 /**
@@ -43,6 +44,8 @@ object Energy {
      * Wi-Fi radio time; set them before [end] when they are known only then.
      */
     class Span(kind: Activity.Kind, val start: Long, internal val cpuId: Long, val metered: Boolean) {
+        /** `SystemClock.uptimeMillis()` at the start: the uptime clock stops while the phone sleeps. */
+        internal val startUp = SystemClock.uptimeMillis()
         /** May change before [end] when what the action turned out to be is known only then (a check that downloaded). */
         @Volatile var kind = kind
         @Volatile var exchanges = 1
@@ -70,16 +73,21 @@ object Energy {
 
     fun begin(kind: Activity.Kind, exchanges: Int = 1): Span {
         val now = System.currentTimeMillis()
-        return Span(kind, now, cpuShare.open(Process.getElapsedCpuTime(), now, kind.name), Power.metered).also { it.exchanges = exchanges }
+        return Span(kind, now, cpuShare.open(Process.getElapsedCpuTime(), SystemClock.uptimeMillis(), kind.name), Power.metered)
+            .also { it.exchanges = exchanges }
     }
 
     fun end(span: Span) {
         val now = System.currentTimeMillis()
-        val cpu = cpuShare.close(span.cpuId, Process.getElapsedCpuTime(), now)
+        val up = SystemClock.uptimeMillis()
+        val cpu = cpuShare.close(span.cpuId, Process.getElapsedCpuTime(), up)
+        // The radio works only while the phone is awake: a phone falling asleep mid-action (no wake lock is held)
+        // stretched the wall-clock span to the whole sleep, up to half an hour of "radio time" for one ping.
+        val end = awakeEnd(span.start, now, up - span.startUp)
         val radio = when {
             span.kind.group !in NETWORK -> 0L
-            span.metered -> addRadio(span.start, now, metered = true)
-            else -> wifiRadioMs(now - span.start, span.exchanges, span.bytes)
+            span.metered -> addRadio(span.start, end, metered = true)
+            else -> wifiRadioMs(end - span.start, span.exchanges, span.bytes)
         }
         val mj = estimateMj(cpu, radio, span.metered)
         synchronized(this) { attributedCpuMs += cpu; attributedTotalMs += cpu }
@@ -103,6 +111,23 @@ object Energy {
         synchronized(this) { radioOnUntil = maxOf(radioOnUntil, now + tail) }
     }
 
+    /**
+     * The limited-network core's own process between [since] and [now]: its CPU time (it is not part of this
+     * process's CPU, so it is added here rather than split out of the sample) and the radio time its keepalives and
+     * carried bytes needed (see `LimitedPower.radioMs`). Radio time the user's own traffic already kept the radio busy
+     * is not charged twice. Charged to [Activity.Kind.LIMITED_START] (the server in use and throwaway probes alike).
+     */
+    fun limited(cpuMs: Long, radioMs: Long, since: Long, now: Long, metered: Boolean = Power.metered) {
+        if (cpuMs <= 0 && radioMs <= 0) return
+        val radio = synchronized(this) {
+            val span = radioMs.coerceIn(0, (now - since).coerceAtLeast(0))
+            val added = radioAdded(radioOnUntil, since, since + span, tail = 0)
+            radioOnUntil = maxOf(radioOnUntil, since + span)
+            added
+        }
+        Activity.addCost(Activity.Kind.LIMITED_START, radioMs = radio, cpuMs = cpuMs, mj = estimateMj(cpuMs, radio, metered))
+    }
+
     /** Radio time added by an action from [start] to [end]: the part of [start, end + tail] not already on. */
     private fun addRadio(start: Long, end: Long, metered: Boolean): Long = synchronized(this) {
         val tail = if (metered) CELL_TAIL_MS else WIFI_TAIL_MS
@@ -122,6 +147,9 @@ object Energy {
     /** Wi-Fi radio time of an action (unit-tested): per exchange plus the bytes, at most its duration + tail. */
     fun wifiRadioMs(durationMs: Long, exchanges: Int, bytes: Long): Long =
         minOf(durationMs.coerceAtLeast(0) + WIFI_TAIL_MS, exchanges.coerceAtLeast(1) * WIFI_EXCHANGE_MS + bytes.coerceAtLeast(0) / WIFI_BYTES_PER_MS)
+
+    /** Wall-clock end of an action that started at [start] and was awake for [awakeMs] of it (unit-tested). */
+    fun awakeEnd(start: Long, now: Long, awakeMs: Long): Long = start + minOf((now - start).coerceAtLeast(0), awakeMs.coerceAtLeast(0))
 
     /** Pure part of [addRadio] (unit-tested): how much of [start, end + tail] lies after [onUntil]. */
     fun radioAdded(onUntil: Long, start: Long, end: Long, tail: Long): Long =

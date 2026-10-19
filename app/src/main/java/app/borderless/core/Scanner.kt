@@ -175,8 +175,10 @@ object Scanner {
         val careful = only == null && reason in CAREFUL && Repo.settings.value.carefulScans
         val targets = if (careful) carefulTargets() else only
         if (careful) AppLog.debug("Scanner", "careful checks: ${reason.name} narrowed to ${targets?.size} server(s)")
-        val wanted = planned(targets ?: Repo.activeServers, first)
-        val active = Repo.activeServers.map { it.id }.toSet()
+        // Limited-network servers are never part of an ordinary scan: they are probed only when the
+        // engine falls back to them (see Limited). [only] may still name them (a manual limited-network probe).
+        val wanted = planned(targets ?: Repo.activeOrdinary, first)
+        val active = Repo.activeOrdinary.map { it.id }.toSet()
         current?.takeIf { it.isActive }?.let { job ->
             val added = run?.add(wanted, first, reason, active)
                 // The running scan is closing: this one runs right after it.
@@ -223,7 +225,7 @@ object Scanner {
                 val done = queued.take(probed)
                 val checked = done.filter { it.id in r.visible }
                 // Covered everything taking part (whoever asked for what): a full scan for the statistics and the pool.
-                val complete = !stopped && Repo.activeServers.all { srv -> done.any { it.id == srv.id } }
+                val complete = !stopped && Repo.activeOrdinary.all { srv -> done.any { it.id == srv.id } }
                 // A rescue of hidden servers reports itself (AutoPool) and isn't a scan of the servers in use: kept out of
                 // the scan statistics ("servers available" chart).
                 if (r.reasons != setOf(Activity.Kind.PROBE_RESCUE)) summarize(checked, started, reason, stopped, complete)
@@ -253,7 +255,7 @@ object Scanner {
      * the order a scan would use now ([first] first) when the choice came from fresh results without a scan.
      */
     fun positionOf(id: String, first: List<String> = emptyList()): Pair<Int, Int>? {
-        val o = order.takeIf { id in it } ?: planned(Repo.activeServers, first).map(Server::id)
+        val o = order.takeIf { id in it } ?: planned(Repo.activeOrdinary, first).map(Server::id)
         val i = o.indexOf(id)
         return if (i < 0) null else (i + 1) to o.size
     }
@@ -324,7 +326,7 @@ object Scanner {
 
     /** The server in use and the next [CAREFUL_NEXT] of the plan (see [start]). */
     private fun carefulTargets(): List<Server> {
-        val active = Repo.activeServers.associateBy { it.id }
+        val active = Repo.activeOrdinary.associateBy { it.id }
         val cur = TunnelState.status.value.serverId?.takeIf { it in active }
         return (listOfNotNull(cur) + _plan.value.filter { it in active && it != cur }.take(CAREFUL_NEXT)).mapNotNull(active::get)
     }
@@ -452,7 +454,7 @@ object Scanner {
     }
 
     private fun replan() {
-        _plan.value = order(Repo.activeServers).map { it.id }
+        _plan.value = order(Repo.activeOrdinary).map { it.id }
     }
 
     /** Requested servers first, then the published [plan] (recomputed if it misses a server). */

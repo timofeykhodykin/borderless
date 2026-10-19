@@ -28,7 +28,22 @@ data class Server(
      * server was added (subscription refreshes don't change it either).
      */
     val customName: String? = null,
-)
+    /**
+     * Limited-network servers (a limited-network link, [app.borderless.config.LimitedLink]): streams kept connected; 0 = automatic
+     * (by strategy, screen, battery saving and traffic, see [LimitedPower]).
+     */
+    val limitedStreams: Int = 0,
+    /** Limited-network servers: the device id sent to the server (empty = the link's, else the app's own id for that server). */
+    val limitedDevice: String = "",
+    /**
+     * Limited-network servers: open more streams than the server's own limit (`max_workers`) if the user allows it.
+     * Off by default: the app keeps within the limit, which the server enforces anyway.
+     */
+    val limitedIgnoreLimit: Boolean = false,
+) {
+    /** Reached through the core: used only when no ordinary server works (see [LimitedLink]). */
+    val limited: Boolean get() = app.borderless.config.LimitedLink.matches(link)
+}
 
 /**
  * A user's folder of servers: it can hold servers added by hand and whole subscriptions.
@@ -199,6 +214,11 @@ data class AppSettings(
     val pingAllSwitches: Boolean = true,
     /** Servers without encryption on the way or without a certificate check take no part (SECURITY.md S7). */
     val avoidInsecure: Boolean = false,
+    /**
+     * Limited-network servers (limited-network links) are taken automatically when no ordinary server works (a limited network, or
+     * all of them down); off: only when the user picks one.
+     */
+    val limitedAuto: Boolean = true,
     /** How the list of countries is sorted. */
     val countrySort: CountrySort = CountrySort.NAME,
     /** Internal: Manual was in effect when the countries were chosen (its server outside them); back when they end. */
@@ -211,6 +231,10 @@ data class AppSettings(
     val customOverGeneric: Boolean = true,
     /** Colour scheme of the interface (`ui.theme.Schemes`), by id. */
     val palette: String = "coral",
+    /** The palette's dark scheme (while [themeFollowsSystem] is off). */
+    val darkTheme: Boolean = false,
+    /** Light or dark as the system's theme says (overrides [darkTheme]). */
+    val themeFollowsSystem: Boolean = false,
     /** 1.0.0's "status bar icon" switch: read only to derive [notify] when [notifyMode] was never set. */
     val statusIcon: Boolean = false,
     /** The notification mode chosen by the user (null = never chosen: see [notify]). */
@@ -309,6 +333,9 @@ data class AppSettings(
     val statsFrom: Long = 0,
     val statsTo: Long = 0,
 ) {
+    /** Whether the dark scheme is in use, given the system's current theme. */
+    fun darkNow(systemDark: Boolean): Boolean = if (themeFollowsSystem) systemDark else darkTheme
+
     /** Switching rules in effect: the strategy's, made more patient in the battery saving mode. */
     val policy: SwitchPolicy
         get() = basePolicy.let { if (ecoOn) EcoMath.policy(it) else it }

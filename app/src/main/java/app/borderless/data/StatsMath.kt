@@ -61,8 +61,10 @@ object StatsMath {
         val mean: Int?,
         /** Mean absolute difference between consecutive successful samples. */
         val jitter: Int?,
+        /** Share answered by time ([availability]); [ok] / [count] are plain counts. */
+        val byTime: Double? = null,
     ) {
-        val availability: Double? get() = if (count == 0) null else ok.toDouble() / count
+        val availability: Double? get() = byTime ?: if (count == 0) null else ok.toDouble() / count
     }
 
     fun summarize(samples: List<StatsDb.Sample>): Summary {
@@ -78,7 +80,47 @@ object StatsMath {
             max = sorted.lastOrNull(),
             mean = if (values.isEmpty()) null else values.average().toInt(),
             jitter = jitter,
+            byTime = availability(samples),
         )
+    }
+
+    /** Width of the time slices availability is measured in ([availability], and the same in StatsDb's queries). */
+    const val AVAIL_SLICE_MS = 10 * 60_000L
+
+    /**
+     * Share answered by time, not by count: checks are grouped into [AVAIL_SLICE_MS] slices and each slice counts once
+     * with its own share. While nothing works the app checks every few seconds; counted one by one, those bursts
+     * outweighed hours of quiet success (phone export of 2026-10-14: 12.6 % of scans vs 51–59 % of the time).
+     */
+    fun availability(samples: List<StatsDb.Sample>): Double? {
+        if (samples.isEmpty()) return null
+        val slices = samples.groupBy { it.ts / AVAIL_SLICE_MS }.values
+        return slices.sumOf { slice -> slice.count { it.ms != null }.toDouble() / slice.size } / slices.size
+    }
+
+    /** Servers available over a period: [share] answered, and the typical scan's [available] of [total]. */
+    data class ScanShare(val share: Double, val available: Double, val total: Double)
+
+    /**
+     * [ScanShare] of [scans] by time: each scan stands for the time until the next one (at most [capMs], so a long
+     * pause with the tunnel off doesn't let one scan decide); scans inside [skip] (no network: the phone's fault, not
+     * the servers') are left out. Counted per scan, the retries every 15–30 s while nothing answered dragged it down.
+     */
+    fun scanShare(scans: List<StatsDb.ScanRow>, skip: List<Segment>, end: Long, capMs: Long = 15 * 60_000L): ScanShare? {
+        val all = scans.sortedBy { it.ts }
+        var weight = 0.0
+        var share = 0.0
+        var available = 0.0
+        var total = 0.0
+        all.forEachIndexed { i, r ->
+            if (r.total <= 0 || skip.any { r.ts >= it.start && r.ts < it.end }) return@forEachIndexed
+            val w = ((all.getOrNull(i + 1)?.ts ?: end) - r.ts).coerceIn(1L, capMs).toDouble()
+            weight += w
+            share += w * r.available / r.total
+            available += w * r.available
+            total += w * r.total
+        }
+        return if (weight == 0.0) null else ScanShare(share / weight, available / weight, total / weight)
     }
 
     fun percentile(sorted: List<Int>, p: Double): Int? {
@@ -122,10 +164,10 @@ object StatsMath {
     }
 
     /**
-     * How good a server was: smoothed share of successful probes × a speed factor
+     * How good a server was: smoothed share of successful probes (time slices answered, see [availability]) × a speed factor
      * (1 at 0 ms, ½ at 400 ms; no answers count as 2 s). Used for scan order and chart defaults.
      */
-    fun score(count: Int, ok: Int, avgMs: Double?): Double =
+    fun score(count: Double, ok: Double, avgMs: Double?): Double =
         (ok + 1.0) / (count + 2.0) / (1.0 + (avgMs ?: 2000.0) / 400.0)
 
     /** Median of [values] (0 for none); the middle two averaged for an even count. */

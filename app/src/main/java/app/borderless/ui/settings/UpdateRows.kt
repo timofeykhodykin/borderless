@@ -64,7 +64,7 @@ internal fun UpdateOffer() {
                 Text(stateText(state) ?: stringResource(R.string.update_offer_sub), fontSize = 13.5.sp, color = Palette.textSecondary)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    stringResource(R.string.update_now), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White,
+                    stringResource(R.string.update_now), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Palette.onAccent,
                     modifier = Modifier.clip(RoundedCornerShape(50)).background(Palette.accent)
                         .clickable(enabled = state !is Updater.State.Downloading) { scope.launchSafe("updating the app") { Updater.update(context) } }
                         .padding(horizontal = 16.dp, vertical = 8.dp),

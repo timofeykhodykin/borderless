@@ -106,4 +106,36 @@ class StatsMathTest {
         assertEquals(15.0, StatsMath.median(listOf(10.0, 20.0)), 1e-9)
         assertEquals(0.0, StatsMath.median(emptyList()), 1e-9)
     }
+    @Test
+    fun availabilityCountsTimeSlicesNotChecks() {
+        val slice = StatsMath.AVAIL_SLICE_MS
+        // Five quiet slices with one good check each, then one bad slice with 30 failed retries.
+        val good = (0 until 5).map { StatsDb.Sample(it * slice, "a", 100) }
+        val bad = (0 until 30).map { StatsDb.Sample(5 * slice + it * 15_000L, "a", null) }
+        assertEquals(5.0 / 6.0, StatsMath.availability(good + bad)!!, 1e-9)
+        assertEquals(5.0 / 6.0, StatsMath.summarize(good + bad).availability!!, 1e-9)
+        assertEquals(35, StatsMath.summarize(good + bad).count) // plain counts stay
+        // Within one slice it is the plain share.
+        val mixed = listOf(StatsDb.Sample(0, "a", 100), StatsDb.Sample(1, "a", null), StatsDb.Sample(2, "a", null), StatsDb.Sample(3, "a", 90))
+        assertEquals(0.5, StatsMath.availability(mixed)!!, 1e-9)
+        assertNull(StatsMath.availability(emptyList()))
+    }
+
+    @Test
+    fun scanShareWeighsByTimeAndSkipsNoNetwork() {
+        fun scan(m: Long, a: Int, t: Int = 10) = StatsDb.ScanRow(m * min, a, t, null)
+        // 10 min with all answering, then 20 retries 30 s apart where nothing answers (10 min in all).
+        val scans = listOf(scan(0, 10)) + (0 until 20).map { StatsDb.ScanRow(10 * min + it * 30_000L, 0, 10, null) }
+        val share = StatsMath.scanShare(scans, emptyList(), 20 * min)!!
+        assertEquals(0.5, share.share, 1e-9) // per scan it would be 1/21
+        assertEquals(5.0, share.available, 1e-9)
+        assertEquals(10.0, share.total, 1e-9)
+        // The failing stretch had no network: only the good scan is left.
+        val off = listOf(StatsMath.Segment(10 * min, 20 * min, Phase.NO_NETWORK, null))
+        assertEquals(1.0, StatsMath.scanShare(scans, off, 20 * min)!!.share, 1e-9)
+        // One scan doesn't stand for more than the cap; scans that checked nothing are ignored.
+        val far = listOf(scan(0, 0), scan(60, 10), scan(80, 0, 0))
+        assertEquals(0.5, StatsMath.scanShare(far, emptyList(), 90 * min)!!.share, 1e-9)
+        assertNull(StatsMath.scanShare(emptyList(), emptyList(), 0))
+    }
 }

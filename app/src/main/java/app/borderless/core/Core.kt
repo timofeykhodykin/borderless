@@ -154,12 +154,20 @@ object Prober {
 
     suspend fun probeDetailed(server: Server, s: AppSettings, timeoutMs: Long): Outcome {
         standIn?.let { return it(server) }
-        val config = try {
-            XrayConfig.probe(LinkParser.parse(server.link).outbounds, s, xrayLogLevel(s), xrayAccessLog(s))
+        // A limited-network server is reached through its core: start a throwaway one, probe through it, tear it down.
+        if (server.limited) return Limited.withOutbounds(server) { outbounds -> probeWith(server, outbounds, s, timeoutMs) }
+            ?: Outcome(null, false).also { AppLog.debug("probe", "${server.name}: core didn't come up") }
+        val outbounds = try {
+            LinkParser.parse(server.link).outbounds
         } catch (e: Exception) {
             AppLog.debug("probe", "${server.name}: bad config: ${e.message}")
             return Outcome(null, false)
         }
+        return probeWith(server, outbounds, s, timeoutMs)
+    }
+
+    private suspend fun probeWith(server: Server, outbounds: List<kotlinx.serialization.json.JsonObject>, s: AppSettings, timeoutMs: Long): Outcome {
+        val config = XrayConfig.probe(outbounds, s, xrayLogLevel(s), xrayAccessLog(s))
         val started = System.currentTimeMillis()
         // The timeout is for the network: starting the throwaway core gets its own allowance.
         // (The measured delay itself never includes the start: libv2ray times only the requests.)
