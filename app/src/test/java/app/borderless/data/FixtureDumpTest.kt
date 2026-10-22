@@ -47,6 +47,8 @@ class FixtureDumpTest {
             regions = setOf("ru", "u-example"), manualServerId = "s1",
             // 3.0.0
             limitedAuto = false,
+            // 3.1.0
+            autoUpdate = false,
         )))
         File(out, "zones.json").writeText(json.encodeToString(ListSerializer(CustomZone.serializer()), listOf(
             CustomZone("u-example", "Example", direct = listOf("domain:a.example", "10.1.0.0/16"), server = listOf("full:b.example"),

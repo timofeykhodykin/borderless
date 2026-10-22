@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Android 12+: the app may update itself without a confirmation (automatic updates, core.Updater). -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <!-- Updates from the project's releases: the downloaded APK is handed to the system installer. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Needed to list apps for split tunneling. -->
@@ -198,6 +200,9 @@
         <!-- The notification was swiped away (Notifications.Dismissed). -->
         <receiver
             android:name=".service.Notifications$Dismissed"
+            android:exported="false" />
+        <receiver
+            android:name=".core.Updater$InstallResult"
             android:exported="false" />
     </application>
 </manifest>

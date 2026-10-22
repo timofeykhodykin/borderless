@@ -96,7 +96,13 @@ object Scanner {
         private val list = ArrayList(servers)
         private var next = 0
         private var closed = false
-        private var inFlight = 0
+        /** Servers handed out whose probe hasn't ended yet. */
+        private val out = mutableSetOf<String>()
+        private var finished = 0
+        /** The pass shown as progress ([restart] begins a new one): probes out at its start + what was queued since. */
+        private var passFinished = 0
+        private var passOut = 0
+        private var passQueue = 0
         val reasons = mutableSetOf(reason)
 
         /** Only automatic background reasons asked for it: probes are spread out in time (see [probeWith]). */
@@ -118,19 +124,43 @@ object Scanner {
          */
         @Synchronized
         fun take(stop: Boolean): Any? {
-            if (stop || (next >= list.size && inFlight == 0)) {
+            if (stop || (next >= list.size && out.isEmpty())) {
                 closed = true
                 return null
             }
             if (next >= list.size) return WAIT
-            inFlight++
-            return list[next++]
+            return list[next++].also { out += it.id }
         }
 
         @Synchronized
-        fun ended() {
-            inFlight--
+        fun ended(id: String) {
+            out -= id
+            finished++
             signal.value++
+        }
+
+        /** Done / total of the current pass. */
+        @Synchronized
+        fun progress(): Pair<Int, Int> = (finished - passFinished) to (passOut + list.size - passQueue)
+
+        /**
+         * Starts the queue over with [fresh] (minus what is being probed right now: those answers count for the new
+         * pass): what hasn't started is dropped, what was done is probed again. The scan and its job go on, so whoever
+         * waits for it gets the new pass. False: closed already.
+         */
+        @Synchronized
+        fun restart(fresh: List<Server>, reason: Activity.Kind, active: Set<String>): List<Server>? {
+            if (closed) return null
+            reasons += reason
+            list.subList(next, list.size).clear()
+            val again = fresh.filter { it.id !in out }
+            passFinished = finished
+            passOut = out.size
+            passQueue = list.size
+            list.addAll(again)
+            again.forEach { if (it.id in active) visible += it.id }
+            signal.value++
+            return again
         }
 
         companion object {
@@ -158,6 +188,10 @@ object Scanner {
 
         @Synchronized
         fun all(): List<Server> = list.toList()
+
+        /** Every server probed (or being probed) in this run, once each. */
+        @Synchronized
+        fun distinct(): List<Server> = list.distinctBy { it.id }
     }
 
     @Volatile
@@ -222,7 +256,8 @@ object Scanner {
                 val queued = r.all()
                 val stopped = probed < queued.size
                 if (stopped) AppLog.debug("Scanner", "scan stopped early: probed $probed of ${queued.size}")
-                val done = queued.take(probed)
+                // A restarted scan probes some servers twice: each counts once.
+                val done = queued.take(probed).distinctBy { it.id }
                 val checked = done.filter { it.id in r.visible }
                 // Covered everything taking part (whoever asked for what): a full scan for the statistics and the pool.
                 val complete = !stopped && Repo.activeOrdinary.all { srv -> done.any { it.id == srv.id } }
@@ -237,7 +272,7 @@ object Scanner {
             } finally {
                 lastActiveAt = System.currentTimeMillis()
                 _progress.value = null
-                _pending.update { it - r.all().map(Server::id).toSet() }
+                _pending.update { it - r.distinct().map(Server::id).toSet() }
             }
         }
         current = job
@@ -245,6 +280,32 @@ object Scanner {
     }
 
     val isRunning: Boolean get() = current?.isActive == true
+
+    /**
+     * "Ping all" tapped while a scan runs (often a background one going slowly, a probe every few seconds): the
+     * running scan starts over with every server taking part, at full pace. Probes in flight keep going and count;
+     * the scan's job stays the same, so the engine or anyone else waiting for it is not cut short. False: no scan to
+     * restart (or it is just ending) — start a new one.
+     */
+    @Synchronized
+    fun restart(): Boolean {
+        if (current?.isActive != true) return false
+        val r = run ?: return false
+        // Quick repeated taps don't restart it again and again: the pass shown must be at least a second old.
+        if (System.currentTimeMillis() - (_progress.value?.startedAt ?: 0) < RESTART_MIN_MS) return true
+        val wanted = planned(Repo.activeOrdinary, emptyList())
+        val active = wanted.map { it.id }.toSet()
+        val again = r.restart(wanted, Activity.Kind.SCAN_MANUAL, active) ?: return false
+        stopRequested = false
+        Activity.count(Activity.Kind.SCAN_MANUAL)
+        Activity.count(Activity.Kind.PROBE, again.size)
+        order = r.all().map { it.id }.distinct().filter { it in r.visible }
+        _pending.update { it + again.map(Server::id) }
+        val (done, total) = r.progress()
+        _progress.value = Progress(done, total, System.currentTimeMillis())
+        AppLog.debug("Scanner", "scan restarted by the user: ${again.size} server(s) queued again")
+        return true
+    }
 
     /** The check order of the latest scan (servers it probes, in the order it starts them; hidden ones excluded). */
     @Volatile
@@ -343,11 +404,12 @@ object Scanner {
             var done = 0
             // Probes still waiting for an answer after their slot was handed on (see below).
             val waiting = AtomicInteger(0)
-            fun finished(ms: Int?) {
+            fun finished(id: String, ms: Int?) {
                 ms?.let { found += it }
-                val d = synchronized(this@Scanner) { ++done }
-                _progress.value = Progress(d, r.size(), _progress.value?.startedAt ?: 0)
-                r.ended()
+                synchronized(this@Scanner) { ++done }
+                r.ended(id)
+                val (d, total) = r.progress()
+                _progress.value = Progress(d, total, _progress.value?.startedAt ?: 0)
             }
             // A fixed pool of workers takes servers strictly in queue order, so probes start in plan order
             // (one coroutine per server racing for a semaphore started them in random order). How many of
@@ -383,16 +445,16 @@ object Scanner {
                             val ms = early ?: probe.await()
                             control.release()
                             control.onResult(ms, typical)
-                            finished(ms)
+                            finished(server.id, ms)
                         } else if (wait < base && waiting.get() < control.limit) {
                             control.release()
                             control.onResult(null, typical)
                             waiting.incrementAndGet()
-                            launch { val ms = try { probe.await() } finally { waiting.decrementAndGet() }; finished(ms) }
+                            launch { val ms = try { probe.await() } finally { waiting.decrementAndGet() }; finished(server.id, ms) }
                         } else {
                             val ms = try { probe.await() } finally { control.release() }
                             control.onResult(ms, typical)
-                            finished(ms)
+                            finished(server.id, ms)
                         }
                     }
                 }
@@ -483,6 +545,9 @@ object Scanner {
                 .thenBy { s -> pings[s.id]?.ms ?: Int.MAX_VALUE }
         )
     }
+
+    /** A scan (or its last restart) this young isn't restarted again by "Ping all". */
+    private const val RESTART_MIN_MS = 1_000L
 
     /** Scans spread out in time: only automatic background rescans (the user waits for the others). */
     private val SPACED = setOf(Activity.Kind.SCAN_BACKGROUND)

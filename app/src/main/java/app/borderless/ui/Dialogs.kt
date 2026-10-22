@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -51,9 +53,14 @@ fun AppAlertDialog(
 ) {
     val shape = RoundedCornerShape(24.dp)
     val side = if (wide) 10.dp else 22.dp
+    // The dialog's window doesn't shrink for the keyboard by itself (it only pans, which hid the buttons of a tall
+    // dialog): it draws behind the system bars and the keyboard, and the card keeps clear of them, so its text part
+    // gets the height that is really left and scrolls.
     BasicAlertDialog(
-        onDismissRequest, if (wide) modifier.padding(horizontal = 12.dp).widthIn(max = 420.dp) else modifier,
-        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = !wide),
+        onDismissRequest,
+        (if (wide) modifier.padding(horizontal = 12.dp).widthIn(max = 420.dp) else modifier)
+            .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing).padding(vertical = 12.dp),
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = !wide, decorFitsSystemWindows = false),
     ) {
         Column(
             Modifier
@@ -70,7 +77,16 @@ fun AppAlertDialog(
                 Spacer(Modifier.height(12.dp))
             }
             if (text != null) {
-                ProvideTextStyle(TextStyle(fontFamily = Body, fontSize = 15.sp, lineHeight = 21.sp, color = Palette.textSecondary)) { text() }
+                // The text takes what is left between the title and the buttons (a scrolling text keeps the buttons on
+                // screen, also above the keyboard). Grey comes as the content colour, not in the text style: a text
+                // field takes the style's colour, and a value the user typed must not look disabled.
+                androidx.compose.foundation.layout.Box(Modifier.weight(1f, fill = false)) {
+                    androidx.compose.runtime.CompositionLocalProvider(
+                        androidx.compose.material3.LocalTextStyle provides androidx.compose.material3.LocalTextStyle.current
+                            .merge(TextStyle(fontFamily = Body, fontSize = 15.sp, lineHeight = 21.sp)).copy(color = Color.Unspecified),
+                        androidx.compose.material3.LocalContentColor provides Palette.textSecondary,
+                    ) { text() }
+                }
             }
             if (irreversible) {
                 if (text != null) Spacer(Modifier.height(8.dp))

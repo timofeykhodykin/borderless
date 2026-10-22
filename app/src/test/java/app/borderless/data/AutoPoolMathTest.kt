@@ -64,4 +64,24 @@ class AutoPoolMathTest {
         repeat(AutoPoolMath.CALM_SCANS) { st = AutoPoolMath.adapt(st, answered = 8, poolSize = 8) }
         assertEquals(4, st.target)
     }
+
+    /** After an outage (export of 2026-10-21): 10 of a 41-server pool answer — enough servers, so the target comes down. */
+    @Test
+    fun targetComesDownAfterAnOutageEvenWithMostOfThePoolSilent() {
+        var st = AutoState(target = AutoPoolMath.MAX_TARGET)
+        val seen = mutableListOf(st.target)
+        repeat(12) {
+            st = AutoPoolMath.adapt(st, answered = 10, poolSize = 41)
+            seen += st.target
+        }
+        assertEquals(AutoPoolMath.MIN_TARGET, st.target)
+        // One step per two good scans, never up.
+        assertEquals(listOf(12, 12, 9, 9, 7, 7, 6, 6, 5, 5, 4, 4, 3), seen)
+        // A scan with too few answers in between starts the count again.
+        st = AutoState(target = 8)
+        st = AutoPoolMath.adapt(st, answered = 6, poolSize = 20)
+        st = AutoPoolMath.adapt(st, answered = 3, poolSize = 20)
+        st = AutoPoolMath.adapt(st, answered = 6, poolSize = 20)
+        assertEquals(8, st.target)
+    }
 }

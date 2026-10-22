@@ -224,6 +224,47 @@ class LinkParserTest {
     }
 
 
+    /** "Directly first": the zones' TCP goes to the local dialer, its way back only to the server, UDP stays direct. */
+    @Test
+    fun directFirstRouting() {
+        val outbounds = LinkParser.parse("vless://id@1.2.3.4:443?type=tcp&security=reality&pbk=k#x").outbounds
+        val df = XrayConfig.DirectFirst(41000, "u", "p", 41001, "bu", "bp")
+        fun cfg(s: AppSettings, mode: XrayConfig.Mode = XrayConfig.Mode.PROXY) =
+            Json.parseToJsonElement(XrayConfig.build(mode, outbounds, s, directFirst = df)).jsonObject
+        fun rules(c: JsonObject) = c.obj("routing")["rules"]!!.jsonArray.map { it.jsonObject }
+        fun tags(c: JsonObject, key: String) = c[key]!!.jsonArray.map { it.jsonObject.str("tag") }
+        val zone = Regions.all.first()
+        val on = AppSettings.fresh().copy(regions = setOf(zone.code))
+        val c = cfg(on)
+        assertTrue("direct-first" in tags(c, "outbounds"))
+        assertTrue("direct-first-back" in tags(c, "inbounds"))
+        val rs = rules(c)
+        fun has(r: JsonObject, k: String, v: String) = r[k]?.jsonArray?.any { it.jsonPrimitive.content == v } == true
+        // The way back always ends at the server.
+        val back = rs.single { has(it, "inboundTag", "direct-first-back") }
+        assertEquals("proxy", back.str("outboundTag"))
+        // The zone's addresses: TCP to the dialer first, then the old direct rule for the rest.
+        val zoneIp = rs.filter { has(it, "ip", zone.directIps.first()) }
+        assertEquals(listOf("direct-first", "direct"), zoneIp.map { it.str("outboundTag") })
+        assertEquals("tcp", zoneIp.first().str("network"))
+        // The user's own "without the tunnel" stays plain direct.
+        val own = rules(cfg(on.copy(directDomains = listOf("example.ru")))).filter { has(it, "domain", "domain:example.ru") }
+        assertEquals(listOf("direct"), own.map { it.str("outboundTag") })
+        // A client that closed its side waits long enough for the dialer's direct try; 1 s as before without it.
+        fun downlinkOnly(c: JsonObject) = c.obj("policy").obj("levels").obj("8")["downlinkOnly"]!!.jsonPrimitive.content
+        assertEquals("6", downlinkOnly(c))
+        val dfUser = c["outbounds"]!!.jsonArray.map { it.jsonObject }.single { it.str("tag") == "direct-first" }
+            .obj("settings")["servers"]!!.jsonArray[0].jsonObject["users"]!!.jsonArray[0].jsonObject
+        assertEquals("8", dfUser["level"]!!.jsonPrimitive.content)
+        assertEquals("1", downlinkOnly(cfg(on.copy(routingEnabled = false))))
+        // Without routing, or without a server, nothing of it is there.
+        assertFalse("direct-first" in tags(cfg(on.copy(routingEnabled = false)), "outbounds"))
+        assertFalse("direct-first-back" in tags(cfg(on, XrayConfig.Mode.DIRECT), "inbounds"))
+        // Listed-only: every TCP not for the server goes to the dialer.
+        val listed = rules(cfg(on.copy(routingMode = app.borderless.data.RoutingMode.LISTED_ONLY)))
+        assertTrue(listed.any { it.str("outboundTag") == "direct-first" && it.str("network") == "tcp" && it["ip"] == null && it["domain"] == null })
+    }
+
     @Test
     fun countries() {
         assertEquals("FR", Countries.detect("🇫🇷 Париж, Франция, Extra"))

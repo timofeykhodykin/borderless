@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="share" path="share/" />
+    <!-- A downloaded update: kept across process starts (core.Updater), deleted once installed. -->
+    <cache-path name="update" path="update/" />
 </paths>

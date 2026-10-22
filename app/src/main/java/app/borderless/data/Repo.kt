@@ -718,6 +718,13 @@ object Repo {
 
     // ------------------------------------------------------------------ io
 
+    /** Sets [Server.limitedDevice] of the given servers without logging (a data migration, not the user's change). */
+    fun setLimitedDevicesQuietly(ids: Map<String, String>) {
+        if (ids.isEmpty()) return
+        _servers.update { list -> list.map { s -> ids[s.id]?.let { s.copy(limitedDevice = it) } ?: s } }
+        saveServers()
+    }
+
     private fun saveServers() = write("servers.json", serversSer) { _servers.value }
 
     private fun idFor(link: String, subscriptionId: String?): String {

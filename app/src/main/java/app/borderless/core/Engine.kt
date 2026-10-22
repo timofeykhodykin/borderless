@@ -65,6 +65,11 @@ class Engine(private val host: Host) {
         fun isScreenOn(): Boolean
         /** The network underneath: "wifi", "cell", "ethernet", "other" (null: none). */
         fun networkKind(): String?
+        /**
+         * The zones' apps inside the tunnel ([inside]) or outside it as usual; a change makes a new TUN interface and
+         * then sends [Event.TunRenewed].
+         */
+        fun zoneAppsInside(inside: Boolean)
     }
 
     sealed interface Event {
@@ -85,6 +90,12 @@ class Engine(private val host: Host) {
         data class PingAll(val toBest: Boolean) : Event
         /** Settings that affect the generated config changed. */
         data object Reconfigure : Event
+        /** What a direct check while connected found (null: it failed). */
+        data class NetReach(val reach: NetCheck.Reach?) : Event
+        /** The service made a new TUN interface (the zones' apps in or out, see [Host.zoneAppsInside]): move the core there. */
+        data object TunRenewed : Event
+        /** The "directly first" dialer ended by itself: the core still points at it, so it restarts at once. */
+        data object DialerEnded : Event
         data object ScanFinished : Event
         /** A scan the engine started for [what] (a decision waiting for it, see scanThen) has ended. */
         data class ScanDone(val what: String) : Event
@@ -151,6 +162,40 @@ class Engine(private val host: Host) {
     private val limitedFirstOk = HashMap<String, Long>()
     private var limitedSurvived = false
     private var limitedGiveUp = false
+
+    /**
+     * Returning from a limited-network server to an ordinary one. Night of 2026-10-21 (phone export): the ordinary
+     * servers answered only in ~3-minute windows every ~16 minutes; one answer was enough to leave, so 13 returns were
+     * made, each lost after 30 s – 21 min (mostly 84 s) — two cuts and a minute of dead traffic each. Now a server must
+     * answer in two checks at least [RETURN_CONFIRM_MS] apart with no failure between ([returnSeen]: the first answer of
+     * its current run of answers; a targeted check of such servers runs at [returnConfirmAt]). A return lost within
+     * [RETURN_SURVIVE_MS] holds off the next one for 10, 20, 40, then 60 min ([returnHeldUntil]); a return that
+     * lasts, or a new network, forgets the count.
+     */
+    private val returnSeen = HashMap<String, Long>()
+    private var returnConfirmAt = 0L
+    private var returnedTo: String? = null
+    private var returnedAt = 0L
+    private var returnFails = 0
+    private var returnHeldUntil = 0L
+
+    private fun resetReturns() {
+        returnSeen.clear()
+        returnConfirmAt = 0
+        returnedTo = null
+        returnFails = 0
+        returnHeldUntil = 0
+    }
+
+    /** A return that lasted [RETURN_SURVIVE_MS]: the count of failed ones starts again. */
+    private fun noteReturnSurvived(now: Long) {
+        if (returnedTo != null && current?.id == returnedTo && now - returnedAt >= RETURN_SURVIVE_MS) {
+            if (returnFails > 0) AppLog.debug(TAG, "return from the limited-network server lasted, failed returns forgotten")
+            returnedTo = null
+            returnFails = 0
+            returnHeldUntil = 0
+        }
+    }
 
     private fun resetLimited() {
         limitedBan.clear()
@@ -301,6 +346,8 @@ class Engine(private val host: Host) {
         Errors.guard("traffic stats", Unit, show = false) { readTraffic(); flushTraffic() }
         Limited.disconnect()
         core.stop()
+        DirectFirst.onEnded = null
+        DirectFirst.stop()
     }
 
     /**
@@ -406,6 +453,7 @@ class Engine(private val host: Host) {
     // ------------------------------------------------------------------ main loop
 
     private suspend fun run(preferredId: String?) {
+        DirectFirst.onEnded = { send(Event.DialerEnded) }
         publish(Phase.SEARCHING)
         step("connect") { initialConnect(preferredId) }
         while (true) {
@@ -434,10 +482,15 @@ class Engine(private val host: Host) {
                     Event.CountryChanged -> onCountryChanged()
                     Event.ServerCountryChanged -> onServerCountryChanged()
                     Event.RestartCore -> restartCore()
+                    Event.TunRenewed -> onTunRenewed()
+                    Event.DialerEnded -> if (directFirstOn) onTunRenewed()
+                    is Event.NetReach -> onNetReach(event.reach)
                     Event.ServersChanged -> if (mode == Mode.DIRECT || mode == Mode.PAUSE) { if (nothingToUse()) enterFallback(noNetwork) else retry() }
                 }
             }
             step("subscriptions") { maybeUpdateSubscriptions() }
+            step("network check") { maybeCheckNet() }
+            step("direct first") { syncDirectFirst() }
             step("heartbeat") { heartbeat() }
         }
     }
@@ -778,7 +831,8 @@ class Engine(private val host: Host) {
             flushTraffic()
             AppLog.debug(TAG, "starting core: proxy via ${server.name} (${server.protocol}, ${server.host}:${server.port})")
             val fd = host.tunFd
-            Energy.track(Activity.Kind.CORE_START) { core.start(xrayConfig(XrayConfig.Mode.PROXY, outbounds), fd) }
+            val cfg = xrayConfig(XrayConfig.Mode.PROXY, outbounds)
+            Energy.track(Activity.Kind.CORE_START) { core.start(cfg, fd) }
             coreFd = fd
             Activity.count(Activity.Kind.CORE_START)
             mode = Mode.PROXY
@@ -786,6 +840,11 @@ class Engine(private val host: Host) {
             offline = false
             unanswered = false
             connectedLimited = limited
+            // On a limited-network server the answers that count for a return start now (see returnSeen).
+            if (server.limited) {
+                returnSeen.clear()
+                returnConfirmAt = 0
+            }
             widerAt = if (server.limited && limited) System.currentTimeMillis() + WIDER_ON_MS else Long.MAX_VALUE
             lastDownAt = System.currentTimeMillis()
             lastBusyAt = lastDownAt
@@ -813,9 +872,11 @@ class Engine(private val host: Host) {
         }
     }
 
-    private fun xrayConfig(mode: XrayConfig.Mode, outbounds: List<kotlinx.serialization.json.JsonObject>): String {
+    private suspend fun xrayConfig(mode: XrayConfig.Mode, outbounds: List<kotlinx.serialization.json.JsonObject>): String {
         val s = settings
-        val cfg = XrayConfig.build(mode, outbounds, s, logLevel = xrayLogLevel(s), accessLog = xrayAccessLog(s))
+        // Through a server on a limited network: the zones' sites are tried directly first (see DirectFirst).
+        val df = if (mode == XrayConfig.Mode.PROXY && directFirstWanted()) DirectFirst.ensure() else null
+        val cfg = XrayConfig.build(mode, outbounds, s, logLevel = xrayLogLevel(s), accessLog = xrayAccessLog(s), directFirst = df)
         if (s.verboseLog) AppLog.debug(TAG, "config: " + redact(cfg))
         return cfg
     }
@@ -836,9 +897,8 @@ class Engine(private val host: Host) {
         AppLog.debug(TAG, "starting core: ${if (m == Mode.PAUSE) "pause" else "direct"} mode")
         try {
             val fd = host.tunFd
-            Energy.track(Activity.Kind.CORE_START) {
-                core.start(xrayConfig(if (m == Mode.PAUSE) XrayConfig.Mode.PAUSE else XrayConfig.Mode.DIRECT, emptyList()), fd)
-            }
+            val cfg = xrayConfig(if (m == Mode.PAUSE) XrayConfig.Mode.PAUSE else XrayConfig.Mode.DIRECT, emptyList())
+            Energy.track(Activity.Kind.CORE_START) { core.start(cfg, fd) }
             coreFd = fd
             restartWanted = 0
             Activity.count(Activity.Kind.CORE_START)
@@ -1134,6 +1194,16 @@ class Engine(private val host: Host) {
             val n = losses.merge(it.id, 1, Int::plus)!!
             penalty[it.id] = System.currentTimeMillis() + PENALTY_STEPS_MS[minOf(n, PENALTY_STEPS_MS.size) - 1]
         }
+        if (lost != null && lost.id == returnedTo) {
+            val now = System.currentTimeMillis()
+            if (now - returnedAt < RETURN_SURVIVE_MS) {
+                returnFails++
+                val wait = RETURN_HOLD_MS[minOf(returnFails, RETURN_HOLD_MS.size) - 1]
+                returnHeldUntil = now + wait
+                AppLog.debug(TAG, "return from the limited-network server failed ($returnFails in a row): next one in ${wait / 60_000} min at the earliest")
+            }
+            returnedTo = null
+        }
         val now = System.currentTimeMillis()
         if (mode == Mode.PROXY) beginCut("LOST", troubleSince.takeIf { it > 0 } ?: now)
         val (up60, down60) = lastMinute()
@@ -1264,6 +1334,19 @@ class Engine(private val host: Host) {
         // strategy — On failure and battery saving too — even with the screen off or the phone idle.
         val onLimited = leavingLimited()
         if (onLimited) {
+            // Servers that answered once: checked again RETURN_CONFIRM_MS later, all at once, before leaving for one.
+            if (returnConfirmAt in 1..now && !Scanner.isRunning) {
+                returnConfirmAt = 0
+                val again = returnSeen.keys.mapNotNull(Repo::server).filter { Repo.isActive(it) }
+                if (again.isNotEmpty()) {
+                    AppLog.debug(TAG, "on the limited-network server: checking ${again.size} server(s) that answered again")
+                    scope.launch {
+                        Scanner.start(reason = Activity.Kind.SCAN_ENGINE, only = again).join()
+                        send(Event.ScanFinished)
+                    }
+                    return
+                }
+            }
             if (now - lastRescanAt < LIMITED_RESCAN_MS) return
             lastRescanAt = now
             AppLog.debug(TAG, "on a limited-network server: rescan of the ordinary servers" + if (urgent) " (the internet is back)" else "")
@@ -1373,6 +1456,19 @@ class Engine(private val host: Host) {
         val pings = Repo.pings.value
         val curMs = pings[cur.id]?.usual ?: lastPing ?: if (leavingLimited) Int.MAX_VALUE else return
         penalty.entries.removeAll { it.value < now }
+        noteReturnSurvived(now)
+        val returning = leavingLimited && !chosen
+        if (returning) {
+            // Who has been answering since when (any failure starts the run again).
+            for (srv in Repo.activeOrdinary) {
+                val r = pings[srv.id]
+                if (r?.ok == true) returnSeen.putIfAbsent(srv.id, r.at) else returnSeen.remove(srv.id)
+            }
+            if (now < returnHeldUntil) {
+                AppLog.debug(TAG, "on the limited-network server: returns held off for ${(returnHeldUntil - now + 59_999) / 60_000} min after failed ones")
+                return
+            }
+        }
         // Stable values only (1.0.0 switched on one sample, once to a server with 4 of its last 5 probes failed):
         // the median of a candidate's last successes, this rescan's included, and no failure among its last results.
         // Never a limited-network server as the target (they are a fallback, not something to optimise towards).
@@ -1382,6 +1478,15 @@ class Engine(private val host: Host) {
         val others = Repo.activeServers
             .filter { it.id != cur.id && !it.limited && it.id !in penalty }
             .mapNotNull { srv -> pings[srv.id]?.takeIf { it.at >= lastRescanAt && (if (leavingLimited) it.ok else it.steady) }?.let { srv to it.usual!! } }
+            // Returning: only servers that kept answering for RETURN_CONFIRM_MS; the others get a check when they could.
+            .filter { (srv, _) -> !returning || now - (returnSeen[srv.id] ?: now) >= RETURN_CONFIRM_MS }
+        if (returning && others.isEmpty() && returnSeen.isNotEmpty()) {
+            val at = returnSeen.values.min() + RETURN_CONFIRM_MS
+            if (returnConfirmAt == 0L || at < returnConfirmAt) {
+                returnConfirmAt = at
+                AppLog.debug(TAG, "on the limited-network server: ${returnSeen.size} ordinary server(s) answered, checking again in ${(at - now + 999) / 1000} s before leaving")
+            }
+        }
         if (others.isEmpty()) {
             winner = null
             if (chosen) AppLog.event(LText.of(R.string.ev_strategy_stay, LText.of(Eco.label(settings.strategy)), label(cur)), AppLog.Kind.GOOD)
@@ -1432,8 +1537,15 @@ class Engine(private val host: Host) {
                     AppLog.debug(TAG, "leaving the limited-network server: ${best.first.name} didn't answer again, staying")
                     return
                 }
-                if (switchTo(best.first, announce, cause)) StatsDb.event(StatsDb.Event.OPTIMIZE, best.first.id, cur.id)
-                else if (!leavingLimited) switchTo(cur, null)
+                if (switchTo(best.first, announce, cause)) {
+                    StatsDb.event(StatsDb.Event.OPTIMIZE, best.first.id, cur.id)
+                    if (returning) {
+                        returnedTo = best.first.id
+                        returnedAt = System.currentTimeMillis()
+                        returnSeen.clear()
+                        returnConfirmAt = 0
+                    }
+                } else if (!leavingLimited) switchTo(cur, null)
             } else {
                 // Not asked for by the user: wait for a quiet moment so open connections aren't cut mid-way.
                 // A later scan may pick another target; the waiting time keeps counting from the first decision.
@@ -1715,6 +1827,73 @@ class Engine(private val host: Host) {
         }
     }
 
+    /** Whether "directly first" is in effect now: the setting, routing on, and the network limited. */
+    private fun directFirstWanted() = settings.directFirst && settings.routingEnabled && (limited || netLimited || DirectFirst.forcedForTest())
+
+    /**
+     * A direct look while connected found the network limited. [limited] is only learnt when nothing answers (the
+     * fallback); a server that still works on a limited network (its address let through) would otherwise never turn
+     * "directly first" on.
+     */
+    private var netLimited = false
+    private var netCheckAt = 0L
+    private var netCheckRunning = false
+
+    /**
+     * While connected with "directly first" on: a direct check of the network ([NetCheck.reach], the zones' check
+     * sites and common ones, all at once) soon after a network change and then every [NET_CHECK_ON_MS] (screen on) /
+     * [NET_CHECK_OFF_MS]. Runs beside the engine; the answer comes back as [Event.NetReach].
+     */
+    private fun maybeCheckNet() {
+        val s = settings
+        if (!s.directFirst || !s.routingEnabled || mode != Mode.PROXY || netCheckRunning) return
+        val now = System.currentTimeMillis()
+        if (now < netCheckAt) return
+        netCheckRunning = true
+        netCheckAt = now + if (Power.screenOn) NET_CHECK_ON_MS else NET_CHECK_OFF_MS
+        scope.launch {
+            val reach = try { NetCheck.reach(REACH_FRESH_MS) } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; null }
+            send(Event.NetReach(reach))
+        }
+    }
+
+    private fun onNetReach(reach: NetCheck.Reach?) {
+        netCheckRunning = false
+        reach ?: return
+        val now = reach == NetCheck.Reach.LIMITED
+        if (now != netLimited) AppLog.debug(TAG, "direct check while connected: network ${if (now) "limited" else "not limited ($reach)"}")
+        netLimited = now
+    }
+
+    /** What [syncDirectFirst] last applied (the TUN starts with the zones' apps outside). */
+    private var directFirstOn = false
+
+    /**
+     * "Directly first" follows the network: on a limited network (with the setting and routing on) the zones' apps go
+     * into the tunnel and the core gets the dialer; off again when the network is no longer limited. Checked after
+     * every step, so every way [limited] changes is covered.
+     */
+    private suspend fun syncDirectFirst() {
+        val want = directFirstWanted()
+        if (want == directFirstOn) return
+        directFirstOn = want
+        AppLog.event(LText.of(if (want) R.string.ev_direct_first_on else R.string.ev_direct_first_off))
+        if (!want) DirectFirst.stop()
+        // The new TUN interface comes back as Event.TunRenewed, which restarts the core with the right config.
+        host.zoneAppsInside(want)
+    }
+
+    /** A new TUN interface from the service: the core moves there (with the config of the moment). */
+    private suspend fun onTunRenewed() {
+        val cur = current
+        if (mode == Mode.PROXY && cur != null) {
+            if (!switchTo(cur, null, "RECONFIGURE")) failover()
+        } else if (mode != null) {
+            enterFallbackMode()
+            publish(fallbackPhase())
+        }
+    }
+
     /** Same server, same mode, a fresh core (it reads the routing lists only when it starts). */
     private suspend fun restartCore() {
         val cur = current
@@ -1750,10 +1929,13 @@ class Engine(private val host: Host) {
         NetCheck.forget()
         AutoPool.resetBackoff()
         penalty.clear()
+        resetReturns()
         losses.clear()
         resetLimited()
         // Not known for the new network yet (the next fallback asks again).
         limited = false
+        // "Directly first" asks the new network soon (see maybeCheckNet); until then it keeps what the last one said.
+        netCheckAt = System.currentTimeMillis() + NET_CHECK_SETTLE_MS
         limitedFullAt = 0
         limitedMisses = 0
         pulseStep = PULSE_FIRST_MS
@@ -1817,6 +1999,7 @@ class Engine(private val host: Host) {
         Repo.expireVerbose()
         scope.launch { Importer.updateDue() }
         scope.launch { GeoLists.updateIfDue() }
+        scope.launch { Updater.checkIfDue() }
     }
 
     private fun publish(phase: Phase, serverId: String? = current?.id) {
@@ -1925,6 +2108,10 @@ class Engine(private val host: Host) {
         private const val OFFLINE_BACKSTOP_MS = 2 * 60_000L
         /** A direct internet check this young is reused when nothing answered. */
         private const val REACH_FRESH_MS = 30_000L
+        /** "Directly first": how often a connected engine looks whether the network is limited (see maybeCheckNet). */
+        private const val NET_CHECK_ON_MS = 15 * 60_000L
+        private const val NET_CHECK_OFF_MS = 60 * 60_000L
+        private const val NET_CHECK_SETTLE_MS = 5_000L
         /**
          * Quick direct checks while offline: 1 s after the change, growing ×1.6 up to 5 s with the screen on, 20 s
          * with it off. Limited networks: up to 10 / 30 s (the wider internet comes back there rarely).
@@ -1940,6 +2127,11 @@ class Engine(private val host: Host) {
         private const val WIDER_OFF_MS = 120_000L
         /** On a limited-network server: how often the ordinary servers are checked again (any strategy but Manual). */
         private const val LIMITED_RESCAN_MS = 5 * 60_000L
+        /** Leaving a limited-network server: answers this far apart, no failure between (see [returnSeen]). */
+        private const val RETURN_CONFIRM_MS = 3 * 60_000L
+        /** A return lost sooner than this counts as failed. */
+        private const val RETURN_SURVIVE_MS = 10 * 60_000L
+        private val RETURN_HOLD_MS = longArrayOf(10 * 60_000L, 20 * 60_000L, 40 * 60_000L, 60 * 60_000L)
         /** The screen turning on starts a retry unless one started this recently. */
         private const val SCREEN_RETRY_GAP_MS = 5_000L
         /** A server that answered this recently is started on at once when the tunnel is turned on. */

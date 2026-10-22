@@ -80,6 +80,9 @@ class MainActivity : ComponentActivity() {
     /** Text shared to the app or a vless://… link opened with it; shown in the add dialog. */
     private var incoming by mutableStateOf<String?>(null)
 
+    /** The update notification was tapped: open the settings (where the update shows) and start it. */
+    private var updateAsked by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         applySystemBars()
         super.onCreate(savedInstanceState)
@@ -110,6 +113,14 @@ class MainActivity : ComponentActivity() {
                     if ('|' !in stack) return
                     saved.removeState(stack)
                     stack = stack.substringBeforeLast('|')
+                }
+                LaunchedEffect(updateAsked) {
+                    if (!updateAsked) return@LaunchedEffect
+                    settingsPage = null
+                    if (screen != "settings") stack = "main|settings"
+                    Errors.guard("updating the app", Unit) { app.borderless.core.Updater.update(this@MainActivity) }
+                    // Only now: a new key would cancel the update above.
+                    updateAsked = false
                 }
                 BackHandler(enabled = screen != "main") {
                     if (screen == "settings" && settingsPage != null) settingsPage = null else back()
@@ -175,6 +186,8 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onStrategy = { v -> Repo.updateSettings { it.copy(strategy = v) } },
                                 onPingAll = {
+                                    // Tapped while a scan runs ("done/total" on the button): it starts over at full pace.
+                                    Scanner.restart()
                                     // With the connection on (and an automatic strategy) the engine checks and, by
                                     // default, moves to the best server: that is what the button is pressed for.
                                     val s = Repo.settings.value
@@ -222,6 +235,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
+        if (intent?.action == app.borderless.core.Updater.ACTION_UPDATE) {
+            app.borderless.core.Updater.cancelNotification()
+            intent.action = null // not again when the activity is recreated
+            updateAsked = true
+            return
+        }
         val text = when (intent?.action) {
             Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
             Intent.ACTION_VIEW -> intent.dataString

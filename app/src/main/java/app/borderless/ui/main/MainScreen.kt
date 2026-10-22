@@ -578,8 +578,14 @@ private fun StatCard(label: String, value: String, ms: Int?, sub: String?, modif
                 autoSize = androidx.compose.foundation.text.TextAutoSize.StepBased(minFontSize = 11.sp, maxFontSize = 19.sp, stepSize = 0.5.sp),
             )
         }
-        // Always a line, so the cards keep the same height.
-        Text(sub.orEmpty(), fontSize = 11.5.sp, color = Palette.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        // Always a line, so the cards keep the same height; it shrinks a little before it is cut (large system font).
+        androidx.compose.foundation.text.BasicText(
+            sub.orEmpty(),
+            style = androidx.compose.ui.text.TextStyle(fontSize = 11.5.sp, color = Palette.textMuted, fontFamily = Body),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            autoSize = androidx.compose.foundation.text.TextAutoSize.StepBased(minFontSize = 8.sp, maxFontSize = 11.5.sp, stepSize = 0.5.sp),
+        )
     }
 }
 
@@ -1135,7 +1141,8 @@ private fun PingChip(scan: Scanner.Progress?, onClick: () -> Unit) {
             .height(44.dp)
             .clip(RoundedCornerShape(50))
             .background(Palette.card)
-            .clickable(enabled = scan == null, onClick = onClick)
+            // While a scan runs a tap starts it over (a slow background scan otherwise had to be waited out).
+            .clickable(onClick = onClick)
             .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

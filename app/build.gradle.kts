@@ -10,8 +10,8 @@ plugins {
 // Xray core packaged for Android by the v2rayNG authors (gomobile build of Xray-core). It runs inside the app and
 // handles all traffic and server credentials, and release assets on GitHub can be replaced: its SHA-256 is pinned
 // here and checked on every build (a mismatch fails it). On a version bump take the hash from a second source.
-val xrayCoreVersion = "v26.10.10"
-val xrayCoreSha256 = "15db760bfbc24c0492ee997784b48a7b5e1bc5032950d617cd252fc2195f7ac7"
+val xrayCoreVersion = "v26.10.21"
+val xrayCoreSha256 = "e56ec3b06485fe7b37af26948673951edf719c50d6bbc618b8539045952adde4"
 val coreAar = file("libs/libv2ray-$xrayCoreVersion.aar")
 
 fun sha256(f: File): String {
@@ -53,12 +53,12 @@ tasks.named("preBuild") { dependsOn(downloadCore) }
 // One executable per ABI, packaged as lib/<abi>/liblimited.so so Android installs it executable; core/Limited.kt
 // starts it and talks to it over stdin/stdout (see native/limited/cmd/limitedd). It runs in its own process because
 // an app can hold only one gomobile library and Xray already is one (native/limited/cmd/limitedd, DESIGN.md).
-val goVersion = "1.27.2"
+val goVersion = "1.27.3"
 val goArchives = mapOf(
-    "darwin-arm64" to "76812b213b1b2302c978d28fa52fa92d541704b9e7d9d5db8002c50e4018c4c5",
-    "darwin-amd64" to "587b59182488b23aa6e5fc25110405a3e0e5b38ed2f5b2f46ed13c32aee356fe",
-    "linux-amd64" to "ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5",
-    "linux-arm64" to "94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8",
+    "darwin-arm64" to "dd3908cf20959d798c1e06ebe5b72213f0505ce01373b40ce3110975a6cd99c2",
+    "darwin-amd64" to "b6f8e931e4ab497fcde6da8ae4499a58f9d258e55c8a80824a516eae5950a750",
+    "linux-amd64" to "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40",
+    "linux-arm64" to "a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49",
 )
 val goHome = rootProject.file(".gradle/go")
 val goRoot = File(goHome, "go$goVersion")
@@ -196,8 +196,8 @@ android {
         targetSdk = 36
         // versionName: MAJOR.MINOR.PATCH[-beta.N | -rc.N]; versionCode: (MAJOR*10000 + MINOR*100 + PATCH)*100 + N,
         // with N = 99 for the final release of that version (so every build is newer than the one before).
-        versionCode = 3000099
-        versionName = "3.0.0"
+        versionCode = 3010099
+        versionName = "3.1.0"
         buildConfigField("String", "XRAY_CORE_VERSION", "\"$xrayCoreVersion\"")
         buildConfigField("String[]", "UI_LANGUAGES", uiLanguages.joinToString(", ", "{", "}") { "\"${languageTag(it)}\"" })
     }

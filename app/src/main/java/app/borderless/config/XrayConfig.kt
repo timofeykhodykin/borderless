@@ -52,9 +52,30 @@ object XrayConfig {
 
     enum class Mode { PROXY, DIRECT, PAUSE }
 
+    /**
+     * "Directly first" on a limited network (core/DirectFirst.kt): TCP the zones' lists would let go without the tunnel
+     * is handed to a local dialer ([port], SOCKS5 with [user]/[pass]) that tries it directly and, if that doesn't work,
+     * comes back through [backPort] — a SOCKS5 inbound of this core ([backUser]/[backPass], random per run) routed to the
+     * server. UDP of those destinations still goes direct (a failure there can't be told apart from silence).
+     */
+    data class DirectFirst(val port: Int, val user: String, val pass: String, val backPort: Int, val backUser: String, val backPass: String)
+
+    const val DIRECT_FIRST_TAG = "direct-first"
+    private const val BACK_TAG = "direct-first-back"
+
     /** [logLevel] "info" logs every routing decision (`[tun >> direct]`), useful in debug builds. */
-    fun build(mode: Mode, proxyOutbounds: List<JsonObject>, s: AppSettings, logLevel: String = "warning", accessLog: String? = null): String {
+    fun build(
+        mode: Mode, proxyOutbounds: List<JsonObject>, s: AppSettings, logLevel: String = "warning", accessLog: String? = null,
+        directFirst: DirectFirst? = null,
+    ): String {
         val routing = s.routingEnabled
+        // Only through a server and with routing: otherwise there is nothing to fall back to, or no list to apply.
+        val df = directFirst?.takeIf { mode == Mode.PROXY && routing }
+        // The zones' "without the tunnel": TCP to the dialer when it runs, the rest (UDP) direct as before.
+        fun kotlinx.serialization.json.JsonArrayBuilder.zoneDirect(domain: List<String>? = null, ip: List<String>? = null) {
+            if (df != null) rule(inbound = TUN, domain = domain, ip = ip, network = "tcp", out = DIRECT_FIRST_TAG)
+            rule(inbound = TUN, domain = domain, ip = ip, out = "direct")
+        }
         val region = RegionRules(s)
         // The DNS module's own queries: to the remote resolver through the server, to the direct resolvers directly.
         // Bound to the module (never to the TUN): apps' own traffic to those addresses follows the usual rules, and
@@ -82,6 +103,17 @@ object XrayConfig {
                         put("routeOnly", true)
                     }
                 }
+                if (df != null) addJsonObject {
+                    put("tag", BACK_TAG)
+                    put("listen", "127.0.0.1")
+                    put("port", df.backPort)
+                    put("protocol", "socks")
+                    putJsonObject("settings") {
+                        put("auth", "password")
+                        putJsonArray("accounts") { addJsonObject { put("user", df.backUser); put("pass", df.backPass) } }
+                        put("udp", false)
+                    }
+                }
             }
             putJsonArray("outbounds") {
                 when (mode) {
@@ -95,6 +127,21 @@ object XrayConfig {
                     putJsonObject("settings") { put("domainStrategy", if (s.ipv6) "UseIP" else "UseIPv4") }
                 }
                 add(blackhole("drop"))
+                if (df != null) addJsonObject {
+                    put("tag", DIRECT_FIRST_TAG)
+                    put("protocol", "socks")
+                    putJsonObject("settings") {
+                        putJsonArray("servers") {
+                            addJsonObject {
+                                put("address", "127.0.0.1")
+                                put("port", df.port)
+                                // Level 8 like the other outbounds: its timeouts (below) apply to this hop too; level 0 would
+                                // cut a client that closed its side after 1 s, before the dialer's direct try ends.
+                                putJsonArray("users") { addJsonObject { put("user", df.user); put("pass", df.pass); put("level", 8) } }
+                            }
+                        }
+                    }
+                }
                 addJsonObject {
                     put("tag", "dns-out")
                     put("protocol", "dns")
@@ -114,6 +161,8 @@ object XrayConfig {
                         if (directDnsIps.isNotEmpty()) rule(inbound = DNS_TAG, ip = directDnsIps, out = "direct")
                     }
                     rule(inbound = DNS_TAG, out = if (mode == Mode.PROXY) "proxy" else "direct")
+                    // What the dialer couldn't open directly comes back here: always through the server.
+                    if (df != null) rule(inbound = BACK_TAG, network = "tcp,udp", out = "proxy")
                     if (mode == Mode.DIRECT) {
                         rule(inbound = TUN, network = "tcp,udp", out = "direct")
                         return@putJsonArray
@@ -135,14 +184,15 @@ object XrayConfig {
                     when (s.routingMode) {
                         RoutingMode.REGION_DIRECT -> {
                             if (region.serverDomains.isNotEmpty()) rule(inbound = TUN, domain = region.serverDomains, out = "proxy")
-                            rule(inbound = TUN, domain = region.directDomains, out = "direct")
+                            zoneDirect(domain = region.directDomains)
                             if (region.serverIps.isNotEmpty()) rule(inbound = TUN, ip = region.serverIps, out = "proxy")
-                            if (region.directIps.isNotEmpty()) rule(inbound = TUN, ip = region.directIps, out = "direct")
+                            if (region.directIps.isNotEmpty()) zoneDirect(ip = region.directIps)
                         }
 
                         RoutingMode.LISTED_ONLY -> {
                             if (region.serverDomains.isNotEmpty()) rule(inbound = TUN, domain = region.serverDomains, out = "proxy")
                             if (region.serverIps.isNotEmpty()) rule(inbound = TUN, ip = region.serverIps, out = "proxy")
+                            if (df != null) rule(inbound = TUN, network = "tcp", out = DIRECT_FIRST_TAG)
                             rule(inbound = TUN, network = "tcp,udp", out = "direct")
                         }
                     }
@@ -160,7 +210,9 @@ object XrayConfig {
                         put("handshake", 4)
                         put("connIdle", 300)
                         put("uplinkOnly", 1)
-                        put("downlinkOnly", 1)
+                        // A client that sends its request and closes its side waits this long for the answer. The
+                        // direct-first dialer may take a direct try (≤ 2.5 s + 3 s for a TLS answer) before replying.
+                        put("downlinkOnly", if (df != null) 6 else 1)
                     }
                 }
             }

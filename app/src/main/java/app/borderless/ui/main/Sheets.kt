@@ -2,6 +2,7 @@ package app.borderless.ui.main
 
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.Folder
 import app.borderless.data.launchSafe
@@ -39,24 +40,25 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.DriveFileMove
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.Flag
-import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Insights
 import androidx.compose.material.icons.rounded.NetworkPing
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import app.borderless.ui.AppAlertDialog
-import app.borderless.ui.CountryDialog
+import app.borderless.ui.ServerSettingsDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -130,64 +132,69 @@ fun AddSheet(initial: String = "", onDismiss: () -> Unit) {
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheet, containerColor = Palette.background) {
+        // Everything but the button scrolls, and the button stays at the bottom of the sheet: with the keyboard up, a
+        // large font or a long bundle the content outgrows the screen, and a plain column then pushed the button off
+        // the sheet or squeezed it into a thin strip.
         Column(Modifier.padding(horizontal = 20.dp).navigationBarsPadding().imePadding()) {
-            Text(stringResource(R.string.add_title), fontSize = 21.sp, fontWeight = FontWeight.Bold, fontFamily = Display, color = Palette.text)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                stringResource(R.string.add_hint),
-                fontSize = 13.sp, color = Palette.textSecondary,
-            )
-            Spacer(Modifier.height(14.dp))
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 260.dp),
-                placeholder = { Text(stringResource(R.string.add_placeholder), color = Palette.textMuted) },
-                shape = RoundedCornerShape(16.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    unfocusedBorderColor = Palette.outline,
-                    focusedBorderColor = Palette.accent,
-                    unfocusedContainerColor = Palette.card,
-                    focusedContainerColor = Palette.background,
-                ),
-                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Palette.text),
-            )
-            BundlePreview(text)
-            result?.let { r ->
-                Spacer(Modifier.height(10.dp))
-                ImportReport(r)
-            }
-            Spacer(Modifier.height(14.dp))
-            Text(stringResource(R.string.add_to_group), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Palette.textSecondary)
-            Spacer(Modifier.height(8.dp))
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                GroupChip(stringResource(R.string.add_group_auto), target == null) { target = null }
-                groups.forEach { g -> GroupChip(Repo.groupName(g), g.id == target) { target = g.id } }
-                GroupChip("+ " + stringResource(R.string.add_group_new), false) { naming = true }
-            }
-            if (target == null) {
-                Spacer(Modifier.height(6.dp))
+            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                Text(stringResource(R.string.add_title), fontSize = 21.sp, fontWeight = FontWeight.Bold, fontFamily = Display, color = Palette.text)
+                Spacer(Modifier.height(4.dp))
                 Text(
-                    stringResource(R.string.add_group_auto_hint, Repo.groupName(Repo.group(Group.DEFAULT_ID))),
-                    fontSize = 12.5.sp, color = Palette.textMuted,
+                    stringResource(R.string.add_hint),
+                    fontSize = 13.sp, color = Palette.textSecondary,
                 )
+                Spacer(Modifier.height(14.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 260.dp),
+                    placeholder = { Text(stringResource(R.string.add_placeholder), color = Palette.textMuted) },
+                    shape = RoundedCornerShape(16.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        unfocusedBorderColor = Palette.outline,
+                        focusedBorderColor = Palette.accent,
+                        unfocusedContainerColor = Palette.card,
+                        focusedContainerColor = Palette.background,
+                    ),
+                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, color = Palette.text),
+                )
+                BundlePreview(text)
+                result?.let { r ->
+                    Spacer(Modifier.height(10.dp))
+                    ImportReport(r)
+                }
+                Spacer(Modifier.height(14.dp))
+                Text(stringResource(R.string.add_to_group), fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Palette.textSecondary)
+                Spacer(Modifier.height(8.dp))
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GroupChip(stringResource(R.string.add_group_auto), target == null) { target = null }
+                    groups.forEach { g -> GroupChip(Repo.groupName(g), g.id == target) { target = g.id } }
+                    GroupChip("+ " + stringResource(R.string.add_group_new), false) { naming = true }
+                }
+                if (target == null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        stringResource(R.string.add_group_auto_hint, Repo.groupName(Repo.group(Group.DEFAULT_ID))),
+                        fontSize = 12.5.sp, color = Palette.textMuted,
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+                // Ways to get text in: clipboard, camera, a picture with a QR code.
+                Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    InputAction(Icons.Rounded.ContentPaste, stringResource(R.string.paste), Modifier.weight(1f)) {
+                        val clip = context.getSystemService(ClipboardManager::class.java).primaryClip
+                        val pasted = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
+                        if (!pasted.isNullOrBlank()) append(pasted)
+                    }
+                    InputAction(Icons.Rounded.QrCodeScanner, stringResource(R.string.scan_qr), Modifier.weight(1f)) {
+                        Errors.guard("opening the QR scanner", Unit) { scanQr.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt(context.getString(R.string.scan_prompt)).setBeepEnabled(false).setOrientationLocked(false)) }
+                    }
+                    InputAction(Icons.Rounded.Image, stringResource(R.string.qr_from_image), Modifier.weight(1f)) {
+                        Errors.guard("choosing an image", Unit) { pickImage.launch("image/*") }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
             }
-            Spacer(Modifier.height(16.dp))
-            // Ways to get text in: clipboard, camera, a picture with a QR code.
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                InputAction(Icons.Rounded.ContentPaste, stringResource(R.string.paste), Modifier.weight(1f)) {
-                    val clip = context.getSystemService(ClipboardManager::class.java).primaryClip
-                    val pasted = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
-                    if (!pasted.isNullOrBlank()) append(pasted)
-                }
-                InputAction(Icons.Rounded.QrCodeScanner, stringResource(R.string.scan_qr), Modifier.weight(1f)) {
-                    Errors.guard("opening the QR scanner", Unit) { scanQr.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt(context.getString(R.string.scan_prompt)).setBeepEnabled(false).setOrientationLocked(false)) }
-                }
-                InputAction(Icons.Rounded.Image, stringResource(R.string.qr_from_image), Modifier.weight(1f)) {
-                    Errors.guard("choosing an image", Unit) { pickImage.launch("image/*") }
-                }
-            }
-            Spacer(Modifier.height(10.dp))
             Row {
                 val done = importedText == text && (result?.let { it.servers + it.subscriptions > 0 } == true)
                 Button(
@@ -209,7 +216,7 @@ fun AddSheet(initial: String = "", onDismiss: () -> Unit) {
                         }
                     },
                     enabled = text.isNotBlank() && !busy,
-                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                     shape = RoundedCornerShape(16.dp),
                     // Disabled (nothing pasted yet, or adding) stays a paler accent with white text, not Material's grey.
                     colors = ButtonDefaults.buttonColors(
@@ -237,7 +244,7 @@ fun AddSheet(initial: String = "", onDismiss: () -> Unit) {
 fun ServerSheet(server: Server, ping: PingRecord?, onConnect: () -> Unit, onStats: () -> Unit, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var askCountry by remember { mutableStateOf(false) }
+    var settingsOpen by remember { mutableStateOf(false) }
     var moveMenu by remember { mutableStateOf(false) }
     var sharing by remember { mutableStateOf(false) }
     val otherGroups = remember(server) {
@@ -245,13 +252,12 @@ fun ServerSheet(server: Server, ping: PingRecord?, onConnect: () -> Unit, onStat
     }
     var confirmDelete by remember { mutableStateOf(false) }
     var probing by remember { mutableStateOf(false) }
-    var renaming by remember { mutableStateOf(false) }
-    var limitedOptions by remember { mutableStateOf(false) }
     val live by Limited.live.collectAsStateWithLifecycle()
     val liveNow = live?.takeIf { it.serverId == server.id }
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Palette.background) {
-        Column(Modifier.padding(horizontal = 20.dp).navigationBarsPadding()) {
+        // Scrolls when a large system font makes it taller than the screen.
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).navigationBarsPadding()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     Modifier.size(46.dp).clip(RoundedCornerShape(13.dp)).background(if (ping == null) Palette.card else Palette.ping(ping.ms)),
@@ -282,7 +288,7 @@ fun ServerSheet(server: Server, ping: PingRecord?, onConnect: () -> Unit, onStat
             )
             if (server.limited) {
                 val streams = when {
-                    liveNow != null -> stringResource(R.string.limited_live, liveNow.active, liveNow.wanted)
+                    liveNow != null -> stringResource(R.string.limited_live_short, liveNow.active, liveNow.wanted)
                     server.limitedStreams == 0 -> stringResource(R.string.limited_auto)
                     else -> stringResource(R.string.limited_n_streams, server.limitedStreams)
                 }
@@ -304,12 +310,8 @@ fun ServerSheet(server: Server, ping: PingRecord?, onConnect: () -> Unit, onStat
                 }
             }
             SheetAction(Icons.Rounded.Insights, stringResource(R.string.stats)) { onStats(); onDismiss() }
-            // Limited-network servers carry traffic over several streams; more streams carry more but
-            // cost more battery. The app paces them by itself, or the user fixes a number here.
-            if (server.limited) SheetAction(Icons.Rounded.Bolt, stringResource(R.string.action_limited_power) + " · " +
-                if (server.limitedStreams == 0) stringResource(R.string.limited_auto) else stringResource(R.string.limited_n_streams, server.limitedStreams)) { limitedOptions = true }
-            SheetAction(Icons.Rounded.Edit, stringResource(R.string.action_rename)) { renaming = true }
-            SheetAction(Icons.Rounded.Flag, stringResource(R.string.action_country)) { askCountry = true }
+            // Name, country and (limited-network servers) streams and device id: one dialog.
+            SheetAction(Icons.Rounded.Tune, stringResource(R.string.action_server_settings)) { settingsOpen = true }
             // Subscription servers always stay in their subscription's group.
             if (server.subscriptionId == null && otherGroups.isNotEmpty()) Box {
                 SheetAction(Icons.AutoMirrored.Rounded.DriveFileMove, stringResource(R.string.action_move_group)) { moveMenu = true }
@@ -327,9 +329,7 @@ fun ServerSheet(server: Server, ping: PingRecord?, onConnect: () -> Unit, onStat
         }
     }
 
-    if (askCountry) CountryDialog(server, onDismiss = { askCountry = false })
-    if (limitedOptions) LimitedOptionsDialog(server) { limitedOptions = false }
-    if (renaming) ServerRenameDialog(server) { renaming = false }
+    if (settingsOpen) ServerSettingsDialog(server) { settingsOpen = false }
     if (sharing) ShareSheet(Repo.realName(server), Repo.shareServer(server.id), allowKeep = false) { sharing = false }
     if (confirmDelete) {
         AppAlertDialog(
@@ -348,6 +348,7 @@ fun ServerSheet(server: Server, ping: PingRecord?, onConnect: () -> Unit, onStat
 private fun InputAction(icon: ImageVector, label: String, modifier: Modifier, onClick: () -> Unit) {
     Column(
         modifier
+            .fillMaxHeight()
             .clip(RoundedCornerShape(16.dp))
             .background(Palette.card)
             .clickable(onClick = onClick)
@@ -356,7 +357,8 @@ private fun InputAction(icon: ImageVector, label: String, modifier: Modifier, on
     ) {
         Icon(icon, null, tint = Palette.textSecondary, modifier = Modifier.size(22.dp))
         Spacer(Modifier.height(4.dp))
-        Text(label, fontSize = 13.sp, color = Palette.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        // Two lines for a large system font; the row keeps the three buttons the same height.
+        Text(label, fontSize = 13.sp, color = Palette.text, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
     }
 }
 
@@ -377,7 +379,8 @@ private fun GroupChip(label: String, selected: Boolean, onClick: () -> Unit) {
 @Composable
 private fun InfoLine(label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-        Text(label, fontSize = 13.sp, color = Palette.textSecondary, modifier = Modifier.width(90.dp))
+        // At least 90 dp, more with a large system font (the label used to run into its value).
+        Text(label, fontSize = 13.sp, color = Palette.textSecondary, modifier = Modifier.widthIn(min = 90.dp).padding(end = 10.dp))
         Text(value, fontSize = 13.sp, color = Palette.text)
     }
 }
@@ -399,90 +402,6 @@ private fun SheetAction(icon: ImageVector, label: String, danger: Boolean = fals
 }
 
 fun Context.toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-
-/** Rename a server; the field holds its real name (not the generic one), empty restores the name from the link. */
-@Composable
-fun ServerRenameDialog(server: Server, onDismiss: () -> Unit) {
-    NameDialog(
-        stringResource(R.string.action_rename), Repo.realName(server),
-        placeholder = Countries.stripFlag(server.name), allowEmpty = true,
-        onDismiss = onDismiss,
-    ) { Repo.renameServer(server.id, it) }
-}
-
-/**
- * Limited-network-server power: how many streams it keeps. Automatic (the app paces it by the strategy, the screen
- * and the battery saving mode), or a fixed number. More streams carry more traffic but cost more battery.
- */
-@Composable
-internal fun LimitedOptionsDialog(server: Server, onDismiss: () -> Unit) {
-    var auto by remember { mutableStateOf(server.limitedStreams == 0) }
-    var streams by remember { mutableStateOf(server.limitedStreams.takeIf { it > 0 } ?: 4) }
-    var device by remember { mutableStateOf(server.limitedDevice) }
-    var ignoreLimit by remember { mutableStateOf(server.limitedIgnoreLimit) }
-    val live by Limited.live.collectAsStateWithLifecycle()
-    val liveNow = live?.takeIf { it.serverId == server.id }
-    val serverMax = remember(server.link) { Limited.maxWorkers(server) }
-    AppAlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Palette.background,
-        title = { Text(stringResource(R.string.action_limited_power)) },
-        text = {
-            Column {
-                // When the app uses such a server and what it costs: not obvious from the list.
-                Text(stringResource(R.string.limited_about), color = Palette.textSecondary, fontSize = 13.sp)
-                if (liveNow != null) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(stringResource(R.string.limited_live, liveNow.active, liveNow.wanted), color = Palette.text, fontSize = 14.sp)
-                }
-                Spacer(Modifier.height(12.dp))
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    Text(stringResource(R.string.limited_auto), Modifier.weight(1f), color = Palette.text, fontSize = 15.sp)
-                    Switch(checked = auto, onCheckedChange = { auto = it })
-                }
-                Text(stringResource(R.string.limited_auto_note), color = Palette.textSecondary, fontSize = 13.sp)
-                if (!auto) {
-                    Spacer(Modifier.height(12.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        IconButton({ if (streams > 1) streams-- }) { Icon(Icons.Rounded.Remove, null, tint = Palette.text) }
-                        Text(stringResource(R.string.limited_n_streams, streams), fontFamily = Display, fontSize = 18.sp, color = Palette.text)
-                        IconButton({ if (streams < app.borderless.data.LimitedPower.MAX_STREAMS) streams++ }) { Icon(Icons.Rounded.Add, null, tint = Palette.text) }
-                    }
-                    Text(stringResource(R.string.limited_manual_note), color = Palette.textSecondary, fontSize = 13.sp)
-                }
-                val shownMax = serverMax ?: liveNow?.serverLimit
-                if (shownMax != null) {
-                    Spacer(Modifier.height(12.dp))
-                    Text(stringResource(R.string.limited_server_limit, shownMax), color = Palette.textSecondary, fontSize = 13.sp)
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Text(stringResource(R.string.limited_ignore_limit), Modifier.weight(1f), color = Palette.text, fontSize = 15.sp)
-                        Switch(checked = ignoreLimit, onCheckedChange = { ignoreLimit = it })
-                    }
-                    Text(stringResource(R.string.limited_ignore_limit_note), color = Palette.textSecondary, fontSize = 13.sp)
-                }
-                Spacer(Modifier.height(16.dp))
-                OutlinedTextField(
-                    value = device, onValueChange = { device = it }, singleLine = true,
-                    label = { Text(stringResource(R.string.limited_device)) }, shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                    // Empty: the id the app sends instead (the link's or its own), so it can be copied to another phone.
-                    supportingText = if (device.isBlank()) {
-                        { androidx.compose.foundation.text.selection.SelectionContainer { Text(stringResource(R.string.limited_device_now, app.borderless.core.Limited.deviceId(server.copy(limitedDevice = "")))) } }
-                    } else null,
-                )
-                Text(stringResource(R.string.limited_device_note), color = Palette.textSecondary, fontSize = 13.sp)
-            }
-        },
-        confirmButton = {
-            TextButton({
-                Repo.setLimitedOptions(server.id, if (auto) 0 else streams, device, ignoreLimit)
-                Limited.repace()
-                onDismiss()
-            }) { Text(stringResource(R.string.save)) }
-        },
-        dismissButton = { TextButton(onDismiss) { Text(stringResource(R.string.cancel)) } },
-    )
-}
 
 /**
  * What an import did: the line of what was added, then every problem with what it was about (a short

@@ -138,4 +138,44 @@ class StatsMathTest {
         assertEquals(0.5, StatsMath.scanShare(far, emptyList(), 90 * min)!!.share, 1e-9)
         assertNull(StatsMath.scanShare(emptyList(), emptyList(), 0))
     }
+
+    @Test
+    fun serverStatesHoldChecksAndPutUseOnTop() {
+        val m = 60_000L
+        val slice = StatsMath.AVAIL_SLICE_MS
+        val checks = listOf(
+            StatsMath.SliceCheck(0, true),
+            StatsMath.SliceCheck(slice, false),
+            // An hour without checks: the failure above holds 30 min, then the strip is empty.
+            StatsMath.SliceCheck(7 * slice, true),
+        )
+        val used = listOf(StatsMath.Segment(5 * m, 8 * m, Phase.CONNECTED, "a"), StatsMath.Segment(8 * m, 9 * m, Phase.CONNECTED, "b"))
+        val spans = StatsMath.serverStates(used, setOf("a"), checks, 0, 10 * slice)
+        assertEquals(
+            listOf(
+                StatsMath.StateSpan(0, 5 * m, StatsMath.ServerState.ANSWERED),
+                StatsMath.StateSpan(5 * m, 8 * m, StatsMath.ServerState.IN_USE),
+                StatsMath.StateSpan(8 * m, slice, StatsMath.ServerState.ANSWERED),
+                StatsMath.StateSpan(slice, 4 * slice, StatsMath.ServerState.NO_REPLY),
+                StatsMath.StateSpan(7 * slice, 10 * slice, StatsMath.ServerState.ANSWERED),
+            ),
+            spans,
+        )
+        // In use but not a single answer in a slice: that slice shows as no reply, the rest of the use stays.
+        val silent = StatsMath.serverStates(
+            listOf(StatsMath.Segment(0, 3 * slice, Phase.CONNECTED, "a")), setOf("a"),
+            listOf(StatsMath.SliceCheck(0, true), StatsMath.SliceCheck(slice, false), StatsMath.SliceCheck(2 * slice, true)), 0, 3 * slice,
+        )
+        assertEquals(
+            listOf(
+                StatsMath.StateSpan(0, slice, StatsMath.ServerState.IN_USE),
+                StatsMath.StateSpan(slice, 2 * slice, StatsMath.ServerState.NO_REPLY),
+                StatsMath.StateSpan(2 * slice, 3 * slice, StatsMath.ServerState.IN_USE),
+            ),
+            silent,
+        )
+        // Clipped to the period; nothing at all = empty.
+        assertEquals(StatsMath.StateSpan(5 * m, slice, StatsMath.ServerState.ANSWERED), StatsMath.serverStates(emptyList(), setOf("a"), checks, 5 * m, 20 * slice).first())
+        assertEquals(emptyList<StatsMath.StateSpan>(), StatsMath.serverStates(emptyList(), setOf("a"), emptyList(), 0, slice))
+    }
 }

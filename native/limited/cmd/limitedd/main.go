@@ -20,6 +20,8 @@
 //	        KEEPALIVE <seconds> <binding seconds> keepalive / TURN binding refresh intervals
 //	        STOP                                 shut down (stdin closing does the same)
 //
+// `limitedd direct-first …` runs the direct-first dialer instead (see directfirst.go).
+//
 // Detailed log lines (English, neutral) go to stderr, only with -verbose; the app reads both streams as one.
 package main
 
@@ -127,6 +129,10 @@ func (e *events) OnLog(line string) { e.debugf("%s", line) }
 func (e *events) stop() { e.once.Do(func() { close(e.done) }) }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "direct-first" {
+		runDirectFirst(os.Args[2:])
+		return
+	}
 	flag.Parse()
 	if *peer == "" || *calls == "" {
 		fmt.Fprintln(os.Stderr, "limitedd: -peer and -calls are required")

@@ -97,11 +97,21 @@ internal fun UpdateRow() {
     }
 }
 
+/** In About: whether new versions install by themselves or are offered once in a notification. */
+@Composable
+internal fun AutoUpdateRow() {
+    val s by app.borderless.data.Repo.settings.collectAsStateWithLifecycle()
+    SwitchRow(stringResource(R.string.set_auto_update), stringResource(R.string.set_auto_update_sub), s.autoUpdate) { on ->
+        app.borderless.data.Repo.updateSettings { it.copy(autoUpdate = on) }
+    }
+}
+
 @Composable
 private fun stateText(s: Updater.State): String? = when (s) {
     Updater.State.Idle -> null
     Updater.State.Checking -> stringResource(R.string.update_checking)
     is Updater.State.Downloading -> stringResource(R.string.update_downloading, s.percent)
     Updater.State.Ready -> stringResource(R.string.update_ready)
+    Updater.State.Waiting -> stringResource(R.string.update_waiting)
     is Updater.State.Failed -> stringResource(R.string.update_failed, s.reason)
 }

@@ -239,6 +239,13 @@ data class AppSettings(
     val statusIcon: Boolean = false,
     /** The notification mode chosen by the user (null = never chosen: see [notify]). */
     val notifyMode: NotifyMode? = null,
+    /** New versions are downloaded and installed by themselves (core.Updater); off: one notification per version. */
+    val autoUpdate: Boolean = true,
+    /**
+     * On a limited network, with routing on: what the zones' lists let go without the tunnel is tried directly first
+     * and goes through the server if that doesn't work; the zones' apps go into the tunnel meanwhile (core.DirectFirst).
+     */
+    val directFirst: Boolean = true,
     // --- battery saving mode (see app.borderless.core.Eco)
     /** The app's own battery saving mode is on (button on the main screen, or the phone's saver). */
     val ecoOn: Boolean = false,
@@ -310,6 +317,11 @@ data class AppSettings(
      * devices by it). Created on first use; empty until then.
      */
     val deviceId: String = "",
+    /**
+     * The limited-network servers added before 3.1.0 keep the per-server device id they used then (frozen into
+     * [Server.limitedDevice] once, see `Limited.freezeOldDeviceIds`); new ones send "borderless-XXXX".
+     */
+    val limitedDevicesFrozen: Boolean = false,
     /** Subscription requests also say the phone's model and Android version (some panels list devices by them). */
     val sendDeviceModel: Boolean = false,
     /** Sharing servers / subscriptions and the statistics export ask for the phone's screen lock first. */

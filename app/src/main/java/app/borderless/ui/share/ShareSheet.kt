@@ -8,6 +8,8 @@ import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -82,7 +84,7 @@ fun ShareSheet(title: String, bundle: ShareFormat.Bundle, allowKeep: Boolean, on
             securePolicy = if (qr) androidx.compose.ui.window.SecureFlagPolicy.SecureOff else androidx.compose.ui.window.SecureFlagPolicy.SecureOn,
         ),
     ) {
-        Column(Modifier.padding(horizontal = 20.dp).navigationBarsPadding()) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).navigationBarsPadding()) {
             Text(stringResource(R.string.share), fontSize = 21.sp, fontWeight = FontWeight.Bold, fontFamily = Display, color = Palette.text)
             Text(title, fontSize = 14.sp, color = Palette.textSecondary)
             Spacer(Modifier.height(4.dp))

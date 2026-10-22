@@ -491,6 +491,37 @@ private fun PhaseLegend(context: Context, durations: Map<Phase, Long>) {
 }
 
 /**
+ * The status strip of one server or a subscription's servers ([StatsMath.serverStates]) with how long each state
+ * lasted; [note] says what the gaps mean.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun ServerStateCard(context: Context, spans: List<StatsMath.StateSpan>, from: Long, to: Long, note: String) {
+    val names = mapOf(
+        StatsMath.ServerState.IN_USE to R.string.srv_state_in_use,
+        StatsMath.ServerState.ANSWERED to R.string.srv_state_answered,
+        StatsMath.ServerState.NO_REPLY to R.string.srv_state_no_reply,
+    )
+    val durations = spans.groupBy { it.state }.mapValues { (_, l) -> l.sumOf { it.end - it.start } }
+    Card(stringResource(R.string.sec_server_states)) {
+        StateStrip(spans.map { Triple(it.start, it.end, serverStateColor(it.state)) }, from, to)
+        Spacer(Modifier.height(8.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            names.forEach { (state, label) ->
+                val ms = durations[state] ?: return@forEach
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(9.dp).clip(RoundedCornerShape(2.dp)).background(serverStateColor(state)))
+                    Spacer(Modifier.width(5.dp))
+                    Text("${stringResource(label)} ${formatDuration(context, ms)}", fontSize = 12.sp, color = Palette.textSecondary)
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(note, fontSize = 12.sp, color = Palette.textMuted)
+    }
+}
+
+/**
  * What the ping chart with its choice of servers works on: a period, the servers that may be shown (those
  * with samples in [aggregates] and in the caller's server map) and the first, muted line — the best of
  * all servers on the overview, the best of one subscription's servers on its screen.
@@ -618,7 +649,7 @@ private fun ServerPicker(
             stringResource(R.string.choose_servers), fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = Display,
             color = Palette.text, modifier = Modifier.padding(horizontal = 20.dp),
         )
-        LazyColumn(Modifier.heightIn(max = 520.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
+        LazyColumn(Modifier.weight(1f, fill = false).heightIn(max = 520.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
             items(candidates, key = { it.key }) { (id, agg) ->
                 val s = byId.getValue(id)
                 val checked = id in selected
@@ -748,6 +779,7 @@ private class ServerData(
     val segments: List<StatsMath.Segment>,
     val dataStart: Long,
     val zones: Zones,
+    val states: List<StatsMath.StateSpan>,
 )
 
 private suspend fun loadServer(context: Context, id: String, p: Period, custom: Pair<Long, Long>?): ServerData {
@@ -766,6 +798,7 @@ private suspend fun loadServer(context: Context, id: String, p: Period, custom: 
         segments,
         StatsDb.firstTimestamp() ?: to,
         loadZones(context, from, to),
+        StatsMath.serverStates(segments, setOf(id), StatsDb.answerSlices(from, to, listOf(id)), from, to),
     )
 }
 
@@ -803,6 +836,9 @@ fun ServerStatsScreen(serverId: String, onBack: () -> Unit) {
                         Triple(stringResource(R.string.ss_chosen), androidx.compose.ui.res.pluralStringResource(R.plurals.ss_chosen_value, d.chosen, d.chosen), null),
                     )
                 )
+            }
+            if (d.states.isNotEmpty()) item {
+                ServerStateCard(context, d.states, d.from, d.to, stringResource(R.string.server_states_note))
             }
             item {
                 val label = server?.let { Repo.displayName(it).take(24) } ?: ""

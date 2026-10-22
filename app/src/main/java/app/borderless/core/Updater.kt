@@ -1,16 +1,29 @@
 package app.borderless.core
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.compose.ui.graphics.toArgb
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import app.borderless.BuildConfig
 import app.borderless.R
+import app.borderless.Res
 import app.borderless.data.AppLog
 import app.borderless.data.Errors
 import app.borderless.data.LText
+import app.borderless.data.Repo
+import app.borderless.ui.MainActivity
+import app.borderless.ui.theme.Palette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,10 +43,17 @@ import java.net.URL
 import java.security.MessageDigest
 
 /**
- * Updates from the project's releases: once a day (and when asked) the latest release — never a pre-release — is
- * looked up; a newer one is offered at the top of the settings and next to "About" (no notification). Updating
- * downloads the APK for this phone's processor, checks it against the release's SHA-256 list and hands it to the
- * system installer, which accepts it only if it is signed with the same key as the installed app.
+ * Updates from the project's releases: once a day (on opening the app and from the engine's hourly check; and when
+ * asked) the latest release — never a pre-release — is looked up; a newer one is offered at the top of the settings
+ * and next to "About". Updating downloads the APK for this phone's processor, checks it against the release's SHA-256
+ * list and hands it to the system installer, which accepts it only if it is signed with the same key as the installed
+ * app.
+ *
+ * With [AppSettings.autoUpdate] (on by default) a new version is downloaded in the background over an unmetered
+ * network and installed through [PackageInstaller] without asking, once the screen is off (Android 12+ lets an app
+ * update itself that way when it may install apps). Where that isn't possible — the setting off, Android 11 or older,
+ * installing from this app not allowed, the system wanting a confirmation, three days on mobile data only — one
+ * notification per version offers the update instead; swiped away, it doesn't come back for that version.
  *
  * Requests go direct (the app's own traffic is outside the tunnel), else through a working server. The project's
  * address is kept encoded, not as plain text.
@@ -52,6 +72,8 @@ object Updater {
         data class Downloading(val percent: Int) : State
         /** Downloaded and checked; installing is up to the system's dialog. */
         data object Ready : State
+        /** Downloaded and checked; installs by itself when the screen turns off (automatic updates). */
+        data object Waiting : State
         data class Failed(val reason: String) : State
     }
 
@@ -71,16 +93,25 @@ object Updater {
 
     private val lock = Mutex()
     private var prefs: android.content.SharedPreferences? = null
+    private lateinit var app: Context
+
+    /** A quiet install waits for the screen to turn off (one receiver while waiting). */
+    private var screenOffWatch: BroadcastReceiver? = null
 
     fun init(context: Context) {
+        app = context.applicationContext
         val p = context.getSharedPreferences("update", Context.MODE_PRIVATE).also { prefs = it }
+        // The first start of a newer version than last time: an update went through.
+        val last = p.getInt("lastCode", 0)
+        if (last in 1 until BuildConfig.VERSION_CODE) AppLog.event(LText.of(R.string.ev_updated, BuildConfig.VERSION_NAME))
+        if (last != BuildConfig.VERSION_CODE) p.edit().putInt("lastCode", BuildConfig.VERSION_CODE).apply()
         _checkedAt.value = p.getLong("checkedAt", 0)
         _dismissed.value = p.getInt("dismissed", 0)
         // What the last check found, if still newer than this build (after an update it no longer is).
         val code = p.getInt("code", 0)
         if (code > BuildConfig.VERSION_CODE) {
             _available.value = Release(p.getString("version", "")!!, code, p.getString("apk", "")!!, p.getString("apkName", "")!!, p.getString("sums", null))
-        }
+        } else runCatching { File(context.cacheDir, "update").deleteRecursively() } // installed, or nothing to install
     }
 
     fun dismiss() {
@@ -89,10 +120,13 @@ object Updater {
         prefs?.edit()?.putInt("dismissed", code)?.apply()
     }
 
-    /** Looks for a release if the last look is a day old ([force]: now). */
+    /**
+     * Looks for a release if the last look is a day old ([force]: now), then goes on with a newer one found now or
+     * earlier ([proceed]: background download and install, or the notification).
+     */
     suspend fun checkIfDue(force: Boolean = false) {
-        if (!force && System.currentTimeMillis() - _checkedAt.value < CHECK_EVERY_MS) return
-        check()
+        if (force || System.currentTimeMillis() - _checkedAt.value >= CHECK_EVERY_MS) check()
+        _available.value?.let { proceed(it) }
     }
 
     private suspend fun check() = lock.withLock {
@@ -106,6 +140,7 @@ object Updater {
                 AppLog.event(LText.of(R.string.ev_update_found, newer.version))
             }
             AppLog.debug(TAG, "latest release: ${r?.version ?: "none"}" + if (newer == null) " (this build is up to date)" else "")
+            if (newer != null && newer.code != _available.value?.code) prefs?.edit()?.putLong("foundAt", now)?.apply()
             _available.value = newer
             prefs?.edit()?.apply {
                 putLong("checkedAt", now)
@@ -125,28 +160,184 @@ object Updater {
      */
     suspend fun update(context: Context) = lock.withLock {
         val r = _available.value ?: return@withLock
-        val file = File(File(context.cacheDir, "share").apply { mkdirs() }, r.apkName)
-        if (_state.value != State.Ready || !file.exists()) {
+        val file = obtain(r) ?: return@withLock
+        Errors.guard("installing the update", Unit) { install(context, file) }
+    }
+
+    /** Not in `cache/share` (emptied at every process start): a download waiting for the screen to turn off stays. */
+    private fun apkFile(r: Release) = File(File(app.cacheDir, "update").apply { mkdirs() }, r.apkName)
+
+    /** The release's APK downloaded, checked and signed with our key ([State.Ready]), or null (then [State.Failed]). */
+    private suspend fun obtain(r: Release): File? {
+        val file = apkFile(r)
+        val ready = prefs?.getInt("readyCode", 0) == r.code && file.exists()
+        if (!ready) {
+            // An older version's download is no longer needed.
+            file.parentFile?.listFiles()?.filter { it != file }?.forEach { it.delete() }
             _state.value = State.Downloading(0)
-            val got = withContext(Dispatchers.IO) { anyRoute { proxy -> download(r, file, proxy) } }
+            val got = try {
+                withContext(Dispatchers.IO) { anyRoute { proxy -> download(r, file, proxy) } }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                file.delete()
+                _state.value = State.Idle
+                throw e
+            }
             got.exceptionOrNull()?.let { e ->
                 file.delete()
                 AppLog.event(LText.of(R.string.ev_update_failed, e.message ?: e.javaClass.simpleName), AppLog.Kind.WARN)
                 _state.value = State.Failed(e.message ?: e.javaClass.simpleName)
-                return@withLock
+                return null
             }
             AppLog.debug(TAG, "downloaded ${r.apkName}, ${file.length() / 1024} KB, checksum matches")
-            _state.value = State.Ready
         }
         // The installer refuses an APK signed by someone else anyway; saying so here is clearer than its error.
-        if (!sameSigner(context, file)) {
+        if (!sameSigner(app, file)) {
             file.delete()
+            prefs?.edit()?.remove("readyCode")?.apply()
             AppLog.event(LText.of(R.string.ev_update_failed, "signed with another key"), AppLog.Kind.WARN)
             _state.value = State.Failed("signed with another key")
-            return@withLock
+            return null
         }
-        Errors.guard("installing the update", Unit) { install(context, file) }
+        prefs?.edit()?.putInt("readyCode", r.code)?.apply()
+        _state.value = State.Ready
+        return file
     }
+
+    /**
+     * A newer release is known: with auto-update, download it (unmetered networks only) and install it quietly once
+     * the screen is off; otherwise, or when that can't be done, offer it once in a notification.
+     */
+    private suspend fun proceed(r: Release) {
+        if (!Repo.settings.value.autoUpdate) return notifyOnce(r)
+        val why = when {
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.S -> "Android 11 or older asks before every install"
+            !app.packageManager.canRequestPackageInstalls() -> "installing from this app isn't allowed yet"
+            prefs?.getInt("quietRefused", 0) == r.code -> "the system asked for a confirmation"
+            else -> null
+        }
+        if (why != null) {
+            AppLog.debug(TAG, "no automatic update to ${r.version}: $why")
+            return notifyOnce(r)
+        }
+        val ready = prefs?.getInt("readyCode", 0) == r.code && apkFile(r).exists()
+        if (!ready && Power.metered) {
+            // 40-odd MB: waits for Wi-Fi, but not for ever.
+            val found = prefs?.getLong("foundAt", 0L) ?: 0L
+            AppLog.debug(TAG, "update ${r.version} waits for an unmetered network")
+            if (found > 0 && System.currentTimeMillis() - found > METERED_WAIT_MS) notifyOnce(r)
+            return
+        }
+        val file = lock.withLock { if (_available.value?.code == r.code) obtain(r) else null } ?: return
+        installWhenIdle(r, file)
+    }
+
+    /** Installs at once if the screen is off, else when it turns off (the tunnel comes back by itself after the update). */
+    private fun installWhenIdle(r: Release, file: File) {
+        if (!Power.screenOn) return installQuietly(r, file)
+        synchronized(this) {
+            _state.value = State.Waiting
+            if (screenOffWatch != null) return
+            AppLog.debug(TAG, "update ${r.version} is ready, installing when the screen turns off")
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    synchronized(this@Updater) { runCatching { app.unregisterReceiver(this) }; screenOffWatch = null }
+                    val now = _available.value ?: return
+                    if (now.code == r.code && file.exists() && Repo.settings.value.autoUpdate) installQuietly(r, file)
+                }
+            }
+            screenOffWatch = receiver
+            ContextCompat.registerReceiver(app, receiver, IntentFilter(Intent.ACTION_SCREEN_OFF), ContextCompat.RECEIVER_NOT_EXPORTED)
+        }
+    }
+
+    /** Hands [file] to the system as an update of this app that needs no confirmation; the answer comes to [InstallResult]. */
+    private fun installQuietly(r: Release, file: File) = Errors.guard("installing the update", Unit, show = false) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return@guard
+        AppLog.event(LText.of(R.string.ev_update_installing, r.version))
+        val installer = app.packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
+            setAppPackageName(app.packageName)
+            setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+        }
+        val id = installer.createSession(params)
+        installer.openSession(id).use { session ->
+            session.openWrite("base.apk", 0, file.length()).use { out ->
+                file.inputStream().use { it.copyTo(out) }
+                session.fsync(out)
+            }
+            val result = Intent(app, InstallResult::class.java).putExtra(EXTRA_CODE, r.code)
+            // Mutable: the installer adds its status to the intent.
+            val pending = PendingIntent.getBroadcast(app, id, result, PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            session.commit(pending.intentSender)
+        }
+    }
+
+    /** The installer's answer to [installQuietly]. Success replaces this process, so mostly the other cases arrive. */
+    class InstallResult : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+            val code = intent.getIntExtra(EXTRA_CODE, 0)
+            if (status == PackageInstaller.STATUS_SUCCESS) return AppLog.debug(TAG, "update installed")
+            // Asking is the user's part: leave the quiet way for this version and offer it in a notification.
+            val id = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
+            if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+                // E.g. a second quiet update of the same app within half a minute (the system's own limit).
+                AppLog.debug(TAG, "the system wants a confirmation for the update")
+                abandoned += id
+                if (id >= 0) runCatching { context.packageManager.packageInstaller.abandonSession(id) }
+            } else {
+                // Abandoning the session above reports a failure of its own.
+                if (id in abandoned) return
+                val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "status $status"
+                AppLog.event(LText.of(R.string.ev_update_not_installed, msg), AppLog.Kind.WARN)
+            }
+            prefs?.edit()?.putInt("quietRefused", code)?.apply()
+            _available.value?.takeIf { it.code == code }?.let { notifyOnce(it) }
+        }
+    }
+
+    /** Sessions given up after the system asked for a confirmation. */
+    private val abandoned = java.util.Collections.synchronizedSet(HashSet<Int>())
+
+    /** One notification per version (swiped away or opened, it is not posted again for that version). */
+    private fun notifyOnce(r: Release) {
+        val p = prefs ?: return
+        if (p.getInt("notified", 0) == r.code) return
+        p.edit().putInt("notified", r.code).apply()
+        AppLog.debug(TAG, "offering ${r.version} in a notification")
+        Errors.guard("showing the update notification", Unit, show = false) {
+            val nm = app.getSystemService(NotificationManager::class.java)
+            if (nm.getNotificationChannel(CHANNEL) == null) {
+                nm.createNotificationChannel(NotificationChannel(CHANNEL, Res.s(R.string.update_channel), NotificationManager.IMPORTANCE_DEFAULT))
+            }
+            val open = PendingIntent.getActivity(
+                app, 3, Intent(app, MainActivity::class.java).setAction(ACTION_UPDATE).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            val ready = p.getInt("readyCode", 0) == r.code
+            nm.notify(
+                NOTIFICATION_ID,
+                NotificationCompat.Builder(app, CHANNEL)
+                    .setSmallIcon(R.drawable.ic_stat_connected)
+                    .setColor(Palette.accent.toArgb())
+                    .setContentTitle(Res.s(R.string.update_available, r.version))
+                    .setContentText(Res.s(if (ready) R.string.update_notif_ready else R.string.update_notif_text))
+                    .setContentIntent(open)
+                    .setAutoCancel(true)
+                    .build(),
+            )
+        }
+    }
+
+    /** The update notification was opened: it is no longer needed. */
+    fun cancelNotification() = runCatching { app.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID) }
+
+    const val ACTION_UPDATE = "app.borderless.action.UPDATE"
+    private const val CHANNEL = "update"
+    private const val NOTIFICATION_ID = 7
+    private const val EXTRA_CODE = "code"
+    private const val METERED_WAIT_MS = 3 * 24 * 3_600_000L
+    private const val TEST_URL = "test"
 
     /** Whether [apk] is signed with the same certificates as this app (SECURITY.md S11). */
     private fun sameSigner(context: Context, apk: File): Boolean = Errors.guard("checking the update", false, show = false) {
@@ -182,17 +373,21 @@ object Updater {
     private suspend fun <T> anyRoute(use: suspend (Proxy) -> T): Result<T> {
         val direct = runCatching { use(Proxy.NO_PROXY) }
         if (direct.isSuccess) return direct
+        // A cancelled caller is not a failed route.
+        (direct.exceptionOrNull() as? kotlinx.coroutines.CancellationException)?.let { throw it }
         AppLog.debug(TAG, "direct: ${direct.exceptionOrNull()?.message}")
         var last = direct
         for (server in ViaServer.candidates(2)) {
             last = runCatching { ViaServer.withProxy(server) { proxy -> use(proxy) } }
             if (last.isSuccess) return last
+            (last.exceptionOrNull() as? kotlinx.coroutines.CancellationException)?.let { throw it }
         }
         return last
     }
 
     /** The latest release (GitHub leaves pre-releases out of "latest") with an APK for this phone, or null. */
     private fun latest(proxy: Proxy): Release? {
+        testRelease()?.let { return it }
         val json = Json.parseToJsonElement(text("https://api.github.com/repos/${project()}/releases/latest", proxy)) as JsonObject
         val version = (json["tag_name"] as? JsonPrimitive)?.content?.removePrefix("v") ?: return null
         val code = codeOf(version) ?: return null
@@ -211,7 +406,18 @@ object Updater {
         return Release(version, code, apk.value, apk.key, sums)
     }
 
+    /**
+     * Debug builds only: `files/update.test` holds a version and `files/update.test.apk` its APK, so the whole path
+     * (offer, notification, quiet install) can be tried without a release.
+     */
+    private fun testRelease(): Release? {
+        if (!BuildConfig.DEBUG) return null
+        val version = File(app.filesDir, "update.test").takeIf { it.exists() }?.readText()?.trim() ?: return null
+        return Release(version, codeOf(version) ?: return null, TEST_URL, "borderless-$version-${Build.SUPPORTED_ABIS[0]}.apk", TEST_URL)
+    }
+
     private fun download(r: Release, file: File, proxy: Proxy) {
+        if (BuildConfig.DEBUG && r.apkUrl == TEST_URL) return File(app.filesDir, "update.test.apk").copyTo(file, overwrite = true).let { }
         val expected = (r.sumsUrl ?: throw IOException("no checksum file")).let { url ->
             text(url, proxy).lines().map { it.trim().split(Regex("\\s+")) }
                 .firstOrNull { it.size >= 2 && it.last().removePrefix("*") == r.apkName }?.first()?.lowercase()

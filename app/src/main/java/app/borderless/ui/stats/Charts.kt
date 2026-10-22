@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
@@ -700,19 +701,32 @@ fun phaseColor(p: Phase): Color = when (p) {
 
 /** One horizontal bar: what the tunnel was doing over the period. Gaps (turned off) stay empty. */
 @Composable
-fun StateTimeline(segments: List<StatsMath.Segment>, from: Long, to: Long) {
+fun StateTimeline(segments: List<StatsMath.Segment>, from: Long, to: Long) =
+    StateStrip(segments.map { Triple(it.start, it.end, phaseColor(it.phase)) }, from, to)
+
+fun serverStateColor(s: StatsMath.ServerState): Color = when (s) {
+    StatsMath.ServerState.IN_USE -> Palette.accent
+    StatsMath.ServerState.ANSWERED -> Palette.accentContainer
+    StatsMath.ServerState.NO_REPLY -> Palette.unavailableMark
+}
+
+/** A status bar over the period: [spans] of (start, end, colour); the rest stays empty. */
+@Composable
+fun StateStrip(spans: List<Triple<Long, Long, Color>>, from: Long, to: Long) {
     val measurer = rememberTextMeasurer()
     val labelStyle = TextStyle(fontSize = 10.sp, color = Palette.textSecondary, fontFamily = Body)
     val fmt = remember(from, to) { timeFormat(from, to) }
-    Canvas(Modifier.fillMaxWidth().height(40.dp)) {
+    // The labels' own height, so a large system font doesn't push them into the bar.
+    val labelH = with(LocalDensity.current) { measurer.measure("0", labelStyle).size.height.toDp() }
+    Canvas(Modifier.fillMaxWidth().height(22.dp + labelH)) {
         val barH = 18.dp.toPx()
         val r = CornerRadius(6.dp.toPx())
         drawRoundRect(Palette.card, size = Size(size.width, barH), cornerRadius = r)
         fun x(t: Long) = size.width * ((t - from).toFloat() / (to - from).coerceAtLeast(1))
-        segments.forEach { s ->
-            val x0 = x(s.start)
-            val w = (x(s.end) - x0).coerceAtLeast(1.5f)
-            drawRect(phaseColor(s.phase), topLeft = Offset(x0, 0f), size = Size(w, barH))
+        spans.forEach { (start, end, color) ->
+            val x0 = x(start)
+            val w = (x(end) - x0).coerceAtLeast(1.5f)
+            drawRect(color, topLeft = Offset(x0, 0f), size = Size(w, barH))
         }
         for (i in 0..4) {
             val t = from + (to - from) * i / 4

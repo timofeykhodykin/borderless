@@ -11,8 +11,10 @@ object AutoPoolMath {
     const val MAX_TARGET = 12
     /** A new member stays at least this long, whatever its rank. */
     const val MIN_STAY_MS = 30 * 60_000L
-    /** Scans in a row with almost the whole pool answering before the target shrinks. */
-    const val CALM_SCANS = 6
+    /** Scans in a row with enough servers answering before the target shrinks by one. */
+    const val CALM_SCANS = 2
+    /** Answers in one scan that count as "enough working servers" (the pool's usual size). */
+    const val ENOUGH = MIN_POOL - 1
     /** Availability assumed for a server without any history. */
     const val UNKNOWN_P = 0.3
 
@@ -62,14 +64,18 @@ object AutoPoolMath {
 
     /**
      * Adapts the target after a scan in which [answered] of the [poolSize] pool servers answered.
-     * Few answers → expect more; almost all answering for several scans → expect less.
+     * Few answers → expect more; enough answering ([ENOUGH], or the target + 2) in [CALM_SCANS] scans in a row →
+     * expect less: a third of the way down to [MIN_TARGET] (at least one), so a target raised to 12 by an outage is back
+     * at 3 after six such steps (twelve good scans). Before 2026-10-21 shrinking also needed 80 % of the pool to answer: after an outage the target
+     * stood at its maximum and the pool kept growing (10 of 41 answering, 7 → 50 servers in a day).
      * Scans where nothing at all answered are not passed here (offline, not a pool problem).
      */
     fun adapt(state: AutoState, answered: Int, poolSize: Int): AutoState = when {
         answered < 2 -> state.copy(target = min(state.target + 1, MAX_TARGET), calm = 0)
-        answered >= state.target + 2 && answered >= poolSize * 0.8 -> {
+        answered >= min(ENOUGH, state.target + 2) && state.target > MIN_TARGET -> {
             val calm = state.calm + 1
-            if (calm >= CALM_SCANS) state.copy(target = max(state.target - 1, MIN_TARGET), calm = 0) else state.copy(calm = calm)
+            val step = max(1, (state.target - MIN_TARGET) / 3)
+            if (calm >= CALM_SCANS) state.copy(target = max(state.target - step, MIN_TARGET), calm = 0) else state.copy(calm = calm)
         }
         else -> state.copy(calm = 0)
     }

@@ -16,9 +16,9 @@
 </p>
 
 <p align="center">
-  <img alt="Version 3.0.0" src="https://img.shields.io/badge/version-3.0.0-E0654D">
+  <img alt="Version 3.1.0" src="https://img.shields.io/badge/version-3.1.0-E0654D">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-3A3436">
-  <img alt="Xray-core v26.10.10" src="https://img.shields.io/badge/Xray--core-v26.10.10-3A3436">
+  <img alt="Xray-core v26.10.21" src="https://img.shields.io/badge/Xray--core-v26.10.21-3A3436">
   <img alt="Kotlin, Jetpack Compose" src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-3A3436">
   <a href="LICENSE"><img alt="PolyForm Noncommercial license" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-3A3436"></a>
 </p>
@@ -102,7 +102,9 @@ browser fingerprint. They are still used when nothing better answers.
 recognises a limited network: it says so (status, notification, a band on the charts), keeps traffic going
 without the tunnel (or paused, as you chose), and checks servers less often — the ones that answered in such a
 network every 30 seconds, all of them after 1, 2, then every 5 minutes — instead of draining the battery. It also
-keeps track of which of your servers reach out from such a network and prefers those when it connects again.
+keeps track of which of your servers reach out from such a network and prefers those when it connects again. While a
+server works there, the zones' sites and apps are tried without the tunnel first and go through the server only
+when that way doesn't open (Settings → Routing, on by default).
 
 **Servers of one country.** A globe button limits everything — choice, checks, failover — to the servers of the
 countries you pick (by the server's name, else its address); the list can be sorted by name, by how often you
@@ -141,11 +143,14 @@ is shown on the button.
 **Notification.** None, only while traffic is not going through a server (searching, without a server, no or a
 limited network — it can be swiped away), or always.
 
-**Updates.** The app checks for a new release once a day and offers it in Settings; the download is checked against
-the release's checksums and its signature before the system installer opens.
+**Updates.** The app checks for a new release once a day. By default it downloads the update over Wi-Fi and installs
+it while the screen is off (Android 12+, once installing from the app is allowed; the connection comes back by
+itself); otherwise — or with automatic updates off — a notification offers each new version once. Every download is
+checked against the release's checksums and its signature before it is installed.
 
-**Statistics.** Availability and ping of every server, connection states over time, failures and switches,
-traffic, per-subscription views. A separate tab shows what the app itself does and costs: network actions, CPU
+**Statistics.** Availability and ping of every server, connection states over time (for the whole connection and
+for each server and subscription: in use, answering, no reply), failures and switches, traffic, per-subscription
+views. A separate tab shows what the app itself does and costs: network actions, CPU
 time, an estimate of its battery use with error margins (from the phone's own power profile), and optional real
 current measurement. Everything can be exported to CSV.
 

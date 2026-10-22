@@ -52,15 +52,14 @@ import androidx.compose.material.icons.rounded.AutoMode
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DragIndicator
 import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.CellTower
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import app.borderless.ui.AppAlertDialog
-import app.borderless.ui.CountryDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -100,7 +99,6 @@ import app.borderless.data.Group
 import app.borderless.data.PingRecord
 import app.borderless.data.Repo
 import app.borderless.data.Server
-import app.borderless.ui.main.ServerRenameDialog
 import app.borderless.service.TunnelService
 import app.borderless.ui.theme.Display
 import app.borderless.ui.theme.Palette
@@ -164,8 +162,8 @@ fun GroupsScreen(onBack: () -> Unit, onSubStats: (String) -> Unit = {}, onServer
         }
     }
     var renaming by remember { mutableStateOf<Group?>(null) }
-    var renamingServer by remember { mutableStateOf<Server?>(null) }
-    var renamingSub by remember { mutableStateOf<Subscription?>(null) }
+    var serverSettings by remember { mutableStateOf<Server?>(null) }
+    var subSettings by remember { mutableStateOf<Subscription?>(null) }
     var deletingServer by remember { mutableStateOf<Server?>(null) }
     var deletingSub by remember { mutableStateOf<Subscription?>(null) }
     var creating by remember { mutableStateOf(false) }
@@ -252,7 +250,7 @@ fun GroupsScreen(onBack: () -> Unit, onSubStats: (String) -> Unit = {}, onServer
                             onShare = { sharing = Share(Repo.subName(row.sub), Repo.shareSubscription(row.sub.id), true) },
                             onMove = { Repo.moveSubscription(row.sub.id, it) },
                             onStats = { onSubStats(row.sub.id) },
-                            onRename = { renamingSub = row.sub },
+                            onSettings = { subSettings = row.sub },
                             onDelete = { deletingSub = row.sub },
                         )
                         is GroupRow.Member -> MemberRow(
@@ -261,7 +259,7 @@ fun GroupsScreen(onBack: () -> Unit, onSubStats: (String) -> Unit = {}, onServer
                             groups = userGroups.filter { it.first.id != row.group.id },
                             onDragStart = { haptic.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate) },
                             onShare = { sharing = Share(Repo.realName(row.server), Repo.shareServer(row.server.id), false) },
-                            onRename = { renamingServer = row.server },
+                            onSettings = { serverSettings = row.server },
                             onStats = { onServerStats(row.server.id) },
                             onDelete = { deletingServer = row.server },
                         )
@@ -276,14 +274,8 @@ fun GroupsScreen(onBack: () -> Unit, onSubStats: (String) -> Unit = {}, onServer
     }
 
     sharing?.let { s -> ShareSheet(s.title, s.bundle, s.allowKeep) { sharing = null } }
-    renamingServer?.let { srv -> ServerRenameDialog(srv) { renamingServer = null } }
-    // Same rule as for servers: the field holds the name in use, empty restores the provider's title.
-    renamingSub?.let { sub ->
-        NameDialog(
-            stringResource(R.string.action_rename), Repo.subName(sub), placeholder = sub.name, allowEmpty = true,
-            onDismiss = { renamingSub = null },
-        ) { Repo.renameSubscription(sub.id, it) }
-    }
+    serverSettings?.let { srv -> app.borderless.ui.ServerSettingsDialog(srv) { serverSettings = null } }
+    subSettings?.let { sub -> app.borderless.ui.SubscriptionSettingsDialog(sub) { subSettings = null } }
     deletingServer?.let { srv ->
         AppAlertDialog(
             irreversible = true,
@@ -413,7 +405,7 @@ private fun ReorderableCollectionItemScope.SubscriptionRow(
     onShare: () -> Unit,
     onMove: (String) -> Unit,
     onStats: () -> Unit,
-    onRename: () -> Unit,
+    onSettings: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val sub = row.sub
@@ -435,7 +427,7 @@ private fun ReorderableCollectionItemScope.SubscriptionRow(
             // Tap the name to rename the subscription.
             Text(
                 Repo.subName(sub), fontSize = 14.5.sp, fontWeight = FontWeight.Bold, color = Palette.text,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable(onClick = onRename),
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable(onClick = onSettings),
             )
             val updated = if (sub.updatedAt == 0L) stringResource(R.string.sub_never)
             else stringResource(R.string.sub_updated, DateUtils.getRelativeTimeSpanString(sub.updatedAt).toString().lowercase())
@@ -453,7 +445,7 @@ private fun ReorderableCollectionItemScope.SubscriptionRow(
             listOfNotNull(
                 MenuAction(Icons.Rounded.Refresh, stringResource(R.string.update), onClick = onUpdate),
                 MenuAction(Icons.Rounded.Insights, stringResource(R.string.action_stats), onClick = onStats),
-                MenuAction(Icons.Rounded.Edit, stringResource(R.string.action_rename), onClick = onRename),
+                MenuAction(Icons.Rounded.Tune, stringResource(R.string.action_server_settings), onClick = onSettings),
                 MenuAction(Icons.Rounded.Share, stringResource(R.string.share), onClick = onShare),
                 if (groups.isNotEmpty()) MenuAction(
                     Icons.AutoMirrored.Rounded.DriveFileMove, stringResource(R.string.action_move_group),
@@ -540,7 +532,7 @@ private fun ReorderableCollectionItemScope.MemberRow(
     groups: List<Pair<Group, String>>,
     onDragStart: () -> Unit,
     onShare: () -> Unit,
-    onRename: () -> Unit,
+    onSettings: () -> Unit,
     onStats: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -548,10 +540,6 @@ private fun ReorderableCollectionItemScope.MemberRow(
     // Subscription servers can be reordered but move between groups only with their subscription.
     val movable = server.subscriptionId == null
     val off = !active
-    var limitedOptions by remember { mutableStateOf(false) }
-    var askCountry by remember { mutableStateOf(false) }
-    if (limitedOptions) app.borderless.ui.main.LimitedOptionsDialog(server) { limitedOptions = false }
-    if (askCountry) CountryDialog(server) { askCountry = false }
     val shape: Shape = when {
         dragging -> RoundedCornerShape(14.dp)
         row.last -> BottomShape
@@ -586,7 +574,7 @@ private fun ReorderableCollectionItemScope.MemberRow(
                 // Tap the name to rename the server.
                 Text(
                     Repo.displayName(server), fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.text,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable(onClick = onRename),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable(onClick = onSettings),
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // Limited-network servers are marked so they stand out in the common list.
@@ -613,13 +601,9 @@ private fun ReorderableCollectionItemScope.MemberRow(
                     if (!off) TunnelService.send(Engine.Event.Disabled(server.id))
                 } else null,
                 MenuAction(Icons.Rounded.Insights, stringResource(R.string.action_stats), onClick = onStats),
-                // Limited-network servers are often hidden from the main screen (the pool decides), so their power control
-                // lives in this menu too.
-                if (server.limited) MenuAction(Icons.Rounded.Bolt, stringResource(R.string.action_limited_power)) { limitedOptions = true } else null,
-                MenuAction(Icons.Rounded.Edit, stringResource(R.string.action_rename), onClick = onRename),
-                // The same as in the server sheet on the main screen: the flag, the country statistics and the
-                // country filter all follow it.
-                MenuAction(Icons.Rounded.Flag, stringResource(R.string.action_country)) { askCountry = true },
+                // Name, country and (limited-network servers, often hidden from the main screen) streams and device id:
+                // the same dialog as the server sheet's.
+                MenuAction(Icons.Rounded.Tune, stringResource(R.string.action_server_settings), onClick = onSettings),
                 MenuAction(Icons.Rounded.Share, stringResource(R.string.share), onClick = onShare),
                 if (movable && groups.isNotEmpty()) MenuAction(
                     Icons.AutoMirrored.Rounded.DriveFileMove, stringResource(R.string.action_move_group),

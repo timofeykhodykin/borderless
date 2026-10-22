@@ -445,6 +445,18 @@ object StatsDb {
         }
     }
 
+    /** Slices ([StatsMath.AVAIL_SLICE_MS]) in which any of [servers] was checked, and whether any of them answered. */
+    suspend fun answerSlices(from: Long, to: Long, servers: Collection<String>): List<StatsMath.SliceCheck> = read(emptyList()) {
+        if (servers.isEmpty()) return@read emptyList()
+        val marks = servers.joinToString(",") { "?" }
+        rawQuery(
+            "SELECT ts / ${StatsMath.AVAIL_SLICE_MS} AS b, COUNT(ms) FROM samples WHERE ts >= ? AND ts < ? AND server IN ($marks) GROUP BY b ORDER BY b",
+            (listOf(from.toString(), to.toString()) + servers).toTypedArray(),
+        ).use { c ->
+            buildList { while (c.moveToNext()) add(StatsMath.SliceCheck(c.getLong(0) * StatsMath.AVAIL_SLICE_MS, c.getInt(1) > 0)) }
+        }
+    }
+
     /** Deletes everything older than [days]. */
     val TABLES = listOf("samples", "phases", "events", "scans", "traffic", "activity", "power", "current", "measurements", "settings_log", "core_cost", "sub_usage", "sys_power")
 

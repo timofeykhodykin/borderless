@@ -152,6 +152,16 @@ class TunnelService : VpnService(), Engine.Host {
         }
     }
 
+    override fun zoneAppsInside(inside: Boolean) {
+        scope.launch {
+            if (inside == zoneAppsInside) return@launch
+            zoneAppsInside = inside
+            AppLog.debug(TAG, if (inside) "zone apps into the tunnel (directly first)" else "zone apps outside the tunnel again")
+            // Without routing the zones' apps are inside anyway: nothing to rebuild.
+            if (Repo.settings.value.routingEnabled) rebuild(Engine.Event.TunRenewed) else engine?.send(Engine.Event.TunRenewed)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         Repo.init(this)
@@ -302,7 +312,10 @@ class TunnelService : VpnService(), Engine.Host {
         // plus the user's "without the tunnel" list, minus the user's "through the tunnel" list (the user's lists win).
         b.addDisallowedApplication(packageName)
         if (s.routingEnabled) {
-            val outside = (zoneApps(s.regions) + s.appsDirect) - s.appsTunnel - packageName
+            // On a limited network with "directly first" the zones' apps come inside: their connections are then tried
+            // directly first and go through the server if that doesn't work (Engine.syncDirectFirst).
+            val zone = if (zoneAppsInside) emptySet() else zoneApps(s.regions)
+            val outside = (zone + s.appsDirect) - s.appsTunnel - packageName
             outside.forEach {
                 try {
                     b.addDisallowedApplication(it)
@@ -329,12 +342,16 @@ class TunnelService : VpnService(), Engine.Host {
         }
     }
 
-    private fun rebuild() {
+    /** The zones' apps are inside the tunnel for now (see [Engine.Host.zoneAppsInside]). */
+    @Volatile
+    private var zoneAppsInside = false
+
+    private fun rebuild(event: Engine.Event = Engine.Event.Reconfigure) {
         if (engine == null) return
         val old = tun
         val fresh = establish() ?: return
         tun = fresh
-        engine?.send(Engine.Event.Reconfigure)
+        engine?.send(event)
         scope.launch {
             delay(3000)
             runCatching { old?.close() }

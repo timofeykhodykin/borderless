@@ -59,6 +59,8 @@ object SettingsLog {
         // Null means the switch of older versions decides (see AppSettings.notify).
         "notifyMode" to (s.notifyMode?.name ?: "auto"),
         "limitedAuto" to s.limitedAuto.toString(),
+        "autoUpdate" to s.autoUpdate.toString(),
+        "directFirst" to s.directFirst.toString(),
         "geoUpdateDays" to s.geoUpdateDays.toString(),
         "probeConcurrency" to s.probeConcurrency.toString(),
         "mtu" to s.mtu.toString(),

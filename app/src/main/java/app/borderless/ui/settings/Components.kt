@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -177,7 +178,10 @@ private fun RowBase(title: String, subtitle: String?, onClick: (() -> Unit)?, se
             if (!subtitle.isNullOrEmpty()) Text(marked(subtitle), fontSize = 14.sp, color = Palette.textSecondary, modifier = Modifier.padding(top = 2.dp))
         }
         Spacer(Modifier.width(10.dp))
-        trailing()
+        // At most a little over half the row: with a large system font a long value took it all and the title
+        // broke into single letters.
+        val max = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp * 0.55f
+        Box(Modifier.widthIn(max = max), contentAlignment = Alignment.CenterEnd) { trailing() }
     }
 }
 
@@ -259,7 +263,7 @@ fun InfoRow(
                 value, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = app.borderless.ui.theme.Display,
                 color = valueColor, modifier = Modifier.padding(start = 10.dp),
             )
-        } else Text(value, fontSize = 15.sp, color = valueColor)
+        } else Text(value, fontSize = 15.sp, color = valueColor, textAlign = androidx.compose.ui.text.style.TextAlign.End)
     }
 
 @Composable

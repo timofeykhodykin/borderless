@@ -61,6 +61,7 @@ private class SubData(
     val segments: List<StatsMath.Segment>,
     val dataStart: Long,
     val zones: Zones,
+    val states: List<StatsMath.StateSpan>,
 ) {
     val bands: List<Band> get() = bands(segments, maxOf(from, dataStart), to) + zones.eco
 }
@@ -85,6 +86,7 @@ private suspend fun loadSub(context: Context, subId: String, p: Period, custom: 
         segments,
         StatsDb.firstTimestamp() ?: to,
         loadZones(context, from, to),
+        StatsMath.serverStates(segments, ids, StatsDb.answerSlices(from, to, ids), from, to),
     )
 }
 
@@ -117,6 +119,9 @@ fun SubscriptionStatsScreen(subId: String, onBack: () -> Unit, onServer: (String
         }
         LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 40.dp)) {
             item { SubTiles(context, sub, d) }
+            if (d.states.isNotEmpty()) item {
+                ServerStateCard(context, d.states, d.from, d.to, stringResource(R.string.sub_states_note))
+            }
             // Hidden servers are checked rarely (auto-visibility) or never: a short period may have nothing.
             if (d.summary.count == 0) item {
                 Text(stringResource(R.string.subst_no_checks), fontSize = 14.sp, color = Palette.textSecondary, modifier = Modifier.padding(vertical = 16.dp))
@@ -134,8 +139,6 @@ fun SubscriptionStatsScreen(subId: String, onBack: () -> Unit, onServer: (String
                             bands = d.bands, resetKey = period to custom, markers = d.zones.strategy,
                             connectGapMs = CONNECT_GAP_MS, clearLabel = stringResource(R.string.band_clear_server),
                         )
-                        Spacer(Modifier.height(8.dp))
-                        Text(stringResource(R.string.subst_available_note), fontSize = 12.sp, color = Palette.textMuted)
                     }
                 }
                 item {

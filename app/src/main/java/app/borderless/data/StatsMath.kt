@@ -46,6 +46,89 @@ object StatsMath {
     fun durations(segments: List<Segment>): Map<Phase, Long> =
         segments.groupBy { it.phase }.mapValues { (_, s) -> s.sumOf { it.end - it.start } }
 
+    /** What one server (or a subscription's servers together) was doing: carrying the traffic, answering, silent. */
+    enum class ServerState { IN_USE, ANSWERED, NO_REPLY }
+
+    data class StateSpan(val start: Long, val end: Long, val state: ServerState)
+
+    /** One [AVAIL_SLICE_MS] slice with checks of the servers: whether any of them answered in it. */
+    data class SliceCheck(val start: Long, val answered: Boolean)
+
+    /**
+     * The status strip of a server or a subscription over [from, to): in use where a CONNECTED segment went through
+     * one of [ids]; elsewhere the result of the checks — a checked slice holds until the next one, at most [holdMs]
+     * (checks are 10 min apart while connected, an hour or more in battery saving or with the tunnel off: past that
+     * the state is unknown and the strip stays empty). An answer in a slice wins over failures in it. A slice in use
+     * without a single answer shows as no reply (only the slice itself): the server was in use but not working.
+     */
+    fun serverStates(
+        segments: List<Segment>, ids: Set<String>, slices: List<SliceCheck>, from: Long, to: Long, holdMs: Long = 3 * AVAIL_SLICE_MS,
+    ): List<StateSpan> {
+        val used = merge(
+            segments.filter { it.phase == Phase.CONNECTED && it.server in ids }
+                .map { StateSpan(maxOf(it.start, from), minOf(it.end, to), ServerState.IN_USE) }.filter { it.end > it.start }.sortedBy { it.start }
+        )
+        val sorted = slices.sortedBy { it.start }
+        val checks = sorted.mapIndexedNotNull { i, c ->
+            val start = maxOf(c.start, from)
+            val end = minOf(sorted.getOrNull(i + 1)?.start ?: Long.MAX_VALUE, c.start + holdMs, to)
+            if (end > start) StateSpan(start, end, if (c.answered) ServerState.ANSWERED else ServerState.NO_REPLY) else null
+        }
+        val silentInUse = intersect(
+            sorted.filter { !it.answered }.map { StateSpan(maxOf(it.start, from), minOf(it.start + AVAIL_SLICE_MS, to), ServerState.NO_REPLY) }.filter { it.end > it.start },
+            used,
+        )
+        return overlay(overlay(checks, used), silentInUse)
+    }
+
+    /** [top] over [base] (each sorted and without overlaps): where both cover a moment, [top]'s state shows. */
+    private fun overlay(base: List<StateSpan>, top: List<StateSpan>): List<StateSpan> {
+        val out = ArrayList<StateSpan>(base.size + top.size)
+        var j = 0
+        for (b in base) {
+            var t = b.start
+            while (j < top.size && top[j].end <= t) j++
+            var k = j
+            while (k < top.size && top[k].start < b.end) {
+                if (top[k].start > t) out += StateSpan(t, top[k].start, b.state)
+                t = maxOf(t, top[k].end)
+                k++
+            }
+            if (t < b.end) out += StateSpan(t, b.end, b.state)
+        }
+        out += top
+        out.sortBy { it.start }
+        return merge(out)
+    }
+
+    /** The parts of [spans] inside [within] (each sorted and without overlaps), keeping their states. */
+    private fun intersect(spans: List<StateSpan>, within: List<StateSpan>): List<StateSpan> {
+        val out = ArrayList<StateSpan>()
+        var j = 0
+        for (x in spans) {
+            while (j < within.size && within[j].end <= x.start) j++
+            var k = j
+            while (k < within.size && within[k].start < x.end) {
+                val a = maxOf(x.start, within[k].start)
+                val b = minOf(x.end, within[k].end)
+                if (b > a) out += StateSpan(a, b, x.state)
+                k++
+            }
+        }
+        return out
+    }
+
+    /** Neighbours of the same state joined. */
+    private fun merge(spans: List<StateSpan>): List<StateSpan> {
+        val merged = ArrayList<StateSpan>(spans.size)
+        for (x in spans) {
+            val last = merged.lastOrNull()
+            if (last != null && last.state == x.state && last.end >= x.start) merged[merged.lastIndex] = last.copy(end = maxOf(last.end, x.end))
+            else merged += x
+        }
+        return merged
+    }
+
     /** Time each server carried traffic (CONNECTED segments). */
     fun usage(segments: List<Segment>): Map<String, Long> =
         segments.filter { it.phase == Phase.CONNECTED && it.server != null }

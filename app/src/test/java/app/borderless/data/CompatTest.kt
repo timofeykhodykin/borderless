@@ -33,6 +33,12 @@ class CompatTest {
     }
 
     @Test
+    fun automaticUpdatesOnForEarlierReleases() {
+        // 3.1.0 added the switch; settings of 3.0.0 have no such key and get it on.
+        assertEquals(true, StoreJson.decodeFromString(AppSettings.serializer(), read("3.0.0", "settings.json")).autoUpdate)
+    }
+
+    @Test
     fun unknownValuesFallBack() {
         // A file from a newer version (or a removed option): unknown keys and enum values must not break reading.
         val s = StoreJson.decodeFromString(AppSettings.serializer(), """{"strategy":"SOMETHING_NEW","removedOption":1,"statsDays":30}""")

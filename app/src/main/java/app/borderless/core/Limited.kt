@@ -63,7 +63,28 @@ object Limited {
     fun attach(context: Context) {
         appContext = context.applicationContext
         binary = context.applicationInfo.nativeLibraryDir + "/" + BINARY
+        freezeOldDeviceIds()
     }
+
+    /**
+     * Once, on the first start of 3.1.0 or later: limited-network servers that sent the per-server derived id
+     * (no id of the user's, none in the link) keep it as their own — a server may have tied a password to it.
+     */
+    private fun freezeOldDeviceIds() {
+        if (Repo.settings.value.limitedDevicesFrozen) return
+        val old = Repo.servers.value
+            .filter { it.limited && it.limitedDevice.isEmpty() && linkDevice(it).isNullOrEmpty() }
+            .associate { it.id to stable("limited|" + it.id) }
+        Repo.setLimitedDevicesQuietly(old)
+        Repo.updateSettings { it.copy(limitedDevicesFrozen = true) }
+        if (old.isNotEmpty()) AppLog.debug(TAG, "kept the device id of ${old.size} limited-network server(s) added before")
+    }
+
+    /** The packaged native program (also runs the direct-first dialer, see [DirectFirst]). */
+    val binaryPath: String? get() = if (this::binary.isInitialized) binary else null
+
+    /** The app's files directory (for debug-only test switches, see [DirectFirst.forcedForTest]). */
+    val filesDir: File? get() = if (this::appContext.isInitialized) appContext.filesDir else null
 
     /** Whether the core is packaged (per ABI; a build without it has no limited-network support). */
     val available: Boolean get() = this::binary.isInitialized && File(binary).exists()
@@ -95,12 +116,37 @@ object Limited {
     /** The limit the app should keep within now: the link's, unless the user allows ignoring it. */
     fun effectiveLimit(server: Server): Int? = if (server.limitedIgnoreLimit) null else maxWorkers(server)
 
-    /** The device id sent for [server]: the user's, else the link's, else a stable id derived for this server. */
+    /** The device id sent for [server]: the user's, else the link's, else this phone's [defaultDeviceId]. */
     fun deviceId(server: Server): String {
         server.limitedDevice.takeIf { it.isNotEmpty() }?.let { return it }
-        runCatching { LimitedLink.parse(server.link).deviceId }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return it }
-        return stable("limited|" + server.id)
+        linkDevice(server)?.takeIf { it.isNotEmpty() }?.let { return it }
+        return defaultDeviceId()
     }
+
+    private fun linkDevice(server: Server): String? = runCatching { LimitedLink.parse(server.link).deviceId }.getOrNull()
+
+    /**
+     * "borderless-" + 6 hex characters of a hash of this app's ANDROID_ID (owner, 2026-10-21): readable in the server's
+     * admin panel, its own on every phone (one id per device, as WDTT does; two devices with one id would push each
+     * other off) and the same after a reinstall (ANDROID_ID is per signing key and phone). WDTT's own id can't be
+     * reproduced: Android gives every signing key a different ANDROID_ID. The raw id never leaves the app. Without a
+     * usable ANDROID_ID: the install id instead.
+     */
+    @Volatile
+    private var defaultId: String? = null
+
+    @android.annotation.SuppressLint("HardwareIds")
+    fun defaultDeviceId(): String = defaultId ?: run {
+        val platform = runCatching {
+            android.provider.Settings.Secure.getString(appContext.contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+        }.getOrNull()?.trim()?.takeIf { it.length >= 8 && it.lowercase() !in BAD_ANDROID_IDS }
+        val seed = platform ?: Repo.deviceId()
+        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(("borderless-device|$seed").toByteArray())
+        ("borderless-" + hash.take(3).joinToString("") { "%02x".format(it) }).also { defaultId = it }
+    }
+
+    /** ANDROID_ID values some old phones share (and WDTT refuses too). */
+    private val BAD_ANDROID_IDS = setOf("9774d56d682e549c", "unknown")
 
     /** Why the last start of a core gave no config ([Session.lastError] of a fatal error), null: no answer in time. */
     @Volatile
@@ -568,7 +614,7 @@ object Limited {
     }
 
     /**
-     * The resolvers of the network the app's own traffic takes (the app bypasses the tunnel), comma-separated. The core
+     * The resolvers of the network the app's own traffic takes (the app is outside the tunnel), comma-separated. The core
      * is a plain Go program: Android gives it no resolv.conf, so without these it falls back to public resolvers,
      * which a limited network may not let through.
      */

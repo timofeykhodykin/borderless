@@ -178,6 +178,7 @@ private fun AboutSection() {
     Section(stringResource(R.string.sec_about)) {
         InfoRow(stringResource(R.string.set_version), BuildConfig.VERSION_NAME)
         UpdateRow()
+        AutoUpdateRow()
         InfoRow(stringResource(R.string.set_core), remember { CoreEnv.version().substringBefore(" (").ifEmpty { BuildConfig.XRAY_CORE_VERSION } })
         AboutProjectRow()
     }
@@ -387,7 +388,7 @@ private fun ServerPage(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Un
     Section(stringResource(R.string.set_sub_stable)) {
         InfoNote(stringResource(R.string.set_stable_params))
         NumberRow(stringResource(R.string.set_rescan), stringResource(R.string.set_rescan_sub), s.rescanIntervalMin, 1..240, min, display = ::minutesText) { v -> set { it.copy(rescanIntervalMin = v) } }
-        NumberRow(stringResource(R.string.set_gain_pct), stringResource(R.string.set_gain_pct_sub), s.switchGainPercent, 0..95, "%") { v -> set { it.copy(switchGainPercent = v) } }
+        NumberRow(stringResource(R.string.set_gain_pct), null, s.switchGainPercent, 0..95, "%") { v -> set { it.copy(switchGainPercent = v) } }
         NumberRow(stringResource(R.string.set_gain_ms), stringResource(R.string.set_gain_ms_sub), s.switchGainMs, 0..2000, ms) { v -> set { it.copy(switchGainMs = v) } }
         NumberRow(stringResource(R.string.set_min_stay), stringResource(R.string.set_min_stay_sub), s.minStayMin, 0..240, min, display = ::minutesText) { v -> set { it.copy(minStayMin = v) } }
         InfoNote(stringResource(R.string.set_stable_weights_note))
@@ -461,6 +462,10 @@ private fun RoutingPage(s: AppSettings, set: ((AppSettings) -> AppSettings) -> U
             stringResource(R.string.set_ads_filter_sub) + if (adsReady) "" else " " + stringResource(R.string.set_ads_filter_wait),
             s.adFilter,
         ) { v -> set { it.copy(adFilter = v) } }
+        // Only with routing: without it everything goes through the server anyway.
+        SwitchRow(
+            stringResource(R.string.set_direct_first), stringResource(R.string.set_direct_first_sub), s.directFirst, enabled = s.routingEnabled,
+        ) { v -> set { it.copy(directFirst = v) } }
     }
     Section(stringResource(R.string.set_zones)) {
         val geo by app.borderless.core.GeoLists.state.collectAsStateWithLifecycle()
