@@ -168,7 +168,7 @@ func openTURNAllocation(ctx context.Context, m *Core, creds *TurnCreds, ep turnE
 	case turnTCP:
 		dialCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
 		defer cancel()
-		d := &net.Dialer{Timeout: 6 * time.Second, KeepAlive: 30 * time.Second}
+		d := &net.Dialer{Timeout: 6 * time.Second, KeepAlive: 30 * time.Second, Control: outboundControl}
 		raw, err := d.DialContext(dialCtx, "tcp", addr)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("TURN TCP connect %s: %w", addr, err)
@@ -178,7 +178,7 @@ func openTURNAllocation(ctx context.Context, m *Core, creds *TurnCreds, ep turnE
 		dialCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
 		d := &tls.Dialer{
-			NetDialer: &net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second},
+			NetDialer: &net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second, Control: outboundControl},
 			Config:    &tls.Config{ServerName: ep.Host, MinVersion: tls.VersionTLS12},
 		}
 		raw, err := d.DialContext(dialCtx, "tcp", addr)
@@ -189,7 +189,7 @@ func openTURNAllocation(ctx context.Context, m *Core, creds *TurnCreds, ep turnE
 	default:
 		dialCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
 		defer cancel()
-		d := &net.Dialer{Timeout: 6 * time.Second}
+		d := &net.Dialer{Timeout: 6 * time.Second, Control: outboundControl}
 		raw, err := d.DialContext(dialCtx, "udp", addr)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("TURN UDP connect %s: %w", addr, err)

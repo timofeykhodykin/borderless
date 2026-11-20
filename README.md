@@ -6,20 +6,20 @@
 </p>
 
 <p align="center">
-  An Android client for <a href="https://github.com/XTLS/Xray-core">Xray-core</a> that keeps you on a working server by itself<br>
-  and is careful with the battery.
+  An Android and macOS client for <a href="https://github.com/XTLS/Xray-core">Xray-core</a> that keeps you on a working server by itself<br>
+  and keeps track of what those checks cost.
 </p>
 
 <p align="center">
-  <a href="https://github.com/timofeykhodykin/borderless/releases/latest"><img alt="Download APK" src="https://img.shields.io/badge/download-APK-E0654D?style=for-the-badge&logo=android&logoColor=white"></a>
+  <a href="https://github.com/timofeykhodykin/borderless/releases/latest"><img alt="Download for Android and macOS" src="https://img.shields.io/badge/download-Android%20%2B%20macOS-E0654D?style=for-the-badge"></a>
   <a href="https://github.com/timofeykhodykin/borderless/releases"><img alt="All releases" src="https://img.shields.io/badge/releases-all-3A3436?style=for-the-badge&logo=github"></a>
 </p>
 
 <p align="center">
-  <img alt="Version 3.1.0" src="https://img.shields.io/badge/version-3.1.0-E0654D">
+  <img alt="Version 4.0.0" src="https://img.shields.io/badge/version-4.0.0-E0654D">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-3A3436">
-  <img alt="Xray-core v26.10.21" src="https://img.shields.io/badge/Xray--core-v26.10.21-3A3436">
-  <img alt="Kotlin, Jetpack Compose" src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-3A3436">
+  <img alt="Xray-core v26.11.9" src="https://img.shields.io/badge/Xray--core-v26.11.9-3A3436">
+  <img alt="macOS 14+, Apple silicon" src="https://img.shields.io/badge/macOS-14.0%2B%20%C2%B7%20Apple%20silicon-3A3436">
   <a href="LICENSE"><img alt="PolyForm Noncommercial license" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-3A3436"></a>
 </p>
 
@@ -32,13 +32,17 @@
   <img src="docs/screenshots/settings.png" width="16%" alt="Settings">
 </p>
 
-> Most phones need the `arm64-v8a` APK.
+<p align="center">
+  <img src="docs/screenshots/macos-main.png" width="80%" alt="macOS main window">
+</p>
 
-**About this project.** Border(less) is a research proof of concept for one engineering question: *can a phone
+> Most phones need the `arm64-v8a` APK. Apple silicon Macs need the `macos-arm64.zip` archive.
+
+**About this project.** Border(less) is a research proof of concept for one engineering question: *can a device
 keep choosing the best of several network servers continuously while spending as little energy as possible on that
 choice?* The app answers it in practice — servers are checked only when a check can pay off, checks ride along with
-traffic the phone sends anyway, scans stop as soon as the answer is known, and every decision's cost is measured on
-the device itself (CPU time, radio time, battery current) and shown in its statistics. It is a personal technical
+traffic the device sends anyway, scans stop as soon as the answer is known, and every decision's cost is measured on
+the device itself (CPU time; on Android, also radio time and battery current) and shown in its statistics. It is a personal technical
 experiment, published as is, without any warranty and without any service behind it: it ships no servers and
 connects only to the servers its user adds. It is not an advertisement and does not promote any means or ways of
 network access: it offers, sells or distributes no servers, subscriptions or access to them, and calls on no one to
@@ -55,11 +59,11 @@ rules of the networks it connects to.
 <details>
 <summary>О проекте (по-русски)</summary>
 
-Border(less) — исследовательский proof of concept для одного инженерного вопроса: *может ли телефон непрерывно
+Border(less) — исследовательский proof of concept для одного инженерного вопроса: *может ли устройство непрерывно
 выбирать лучший из нескольких сетевых серверов, тратя на этот выбор как можно меньше энергии?* Приложение отвечает
 на него на практике: серверы проверяются только тогда, когда проверка может окупиться, проверки идут попутно с
-трафиком, который телефон и так передаёт, сканирование останавливается, как только ответ найден, а цена каждого
-решения измеряется на самом устройстве (время процессора, время работы радиомодуля, ток батареи) и видна в
+трафиком, который устройство и так передаёт, сканирование останавливается, как только ответ найден, а цена каждого
+решения измеряется на самом устройстве (время процессора; на Android — также работа радиомодуля и ток батареи) и видна в
 статистике. Это личный технический эксперимент, опубликованный «как есть», без каких-либо гарантий и без какого-либо
 сервиса за ним: в приложении нет своих серверов, оно подключается только к серверам, которые добавил сам
 пользователь. Проект не является рекламой и не популяризирует никакие средства и способы доступа к
@@ -121,7 +125,7 @@ subscription is downloaded through one of your servers. Broken links and failed 
 words. Each provider gets a device id of its own, so providers can't tell they serve the same phone; the phone's
 model is sent only if you allow it.
 
-**Groups.** Put servers and whole subscriptions into folders, drag to reorder, hide servers, rename them.
+**Groups.** Put servers and whole subscriptions into folders, hide servers and rename them. On Android, drag lists to reorder them.
 *Auto-visibility* can keep just the servers that work best for you in rotation; *auto-sort* shows them in the order
 they are checked.
 
@@ -140,59 +144,115 @@ and smarter, and among working servers the cheaper ones are preferred: by the co
 on your phone) and by what wakes the radio while the phone is idle (keepalives, health checks). The expected saving
 is shown on the button.
 
-**Notification.** None, only while traffic is not going through a server (searching, without a server, no or a
+**Notifications.** None, only while traffic is not going through a server (searching, without a server, no or a
 limited network — it can be swiped away), or always.
 
 **Updates.** The app checks for a new release once a day. By default it downloads the update over Wi-Fi and installs
 it while the screen is off (Android 12+, once installing from the app is allowed; the connection comes back by
 itself); otherwise — or with automatic updates off — a notification offers each new version once. Every download is
-checked against the release's checksums and its signature before it is installed.
+checked against the release's checksums. Android also checks the APK's signing certificate; macOS verifies an
+Ed25519 signature over the checksum file and the app's code seal. On macOS an automatic update is staged over an
+unmetered connection and applied at the next service start while the tunnel is off.
 
 **Statistics.** Availability and ping of every server, connection states over time (for the whole connection and
 for each server and subscription: in use, answering, no reply), failures and switches, traffic, per-subscription
 views. A separate tab shows what the app itself does and costs: network actions, CPU
 time, an estimate of its battery use with error margins (from the phone's own power profile), and optional real
-current measurement. Everything can be exported to CSV.
+current measurement. Everything can be exported to CSV. On macOS the Activity tab measures process CPU time and the energy counters
+available from the system; phone radio and battery-current measurements are Android features.
 
-**Quick Settings and status bar.** A Quick Settings tile that follows the connection live (connecting, server
+**Quick access.** On macOS a menu bar panel shows the connection and provides server selection, a ping run and
+connection controls. On Android a Quick Settings tile follows the connection live (connecting, server
 and ping, direct…; long press opens the app); the notification puts the state icon into the status bar.
 
 **Sharing.** A server, a group, a subscription or everything — as plain links any client understands, or in the
 app's own format that also keeps groups and hidden servers. Import by pasting, camera QR or a QR code in a
 picture.
 
-**Privacy and security.** App data, logs and statistics are encrypted at rest (AES-GCM / SQLCipher, key in the
-Android Keystore); cleartext HTTP is disabled; DNS of the apps in the tunnel goes through the server; servers whose
+**Privacy and security.** On Android, app data, logs and statistics are encrypted at rest (AES-GCM / SQLCipher,
+key in the Android Keystore). On macOS they are stored as plaintext in a root-only service directory; the system's
+file permissions protect access. The Mac service runs the traffic cores as a separate unprivileged user, and
+checks the identity of every app connecting to its control socket. Cleartext HTTP is disabled; DNS of the apps in the tunnel goes through the server; servers whose
 traffic isn't encrypted or whose certificate isn't checked are marked (and can be left out); "pause traffic" holds
 in every case, also with no servers at all; country lookups go through your own servers, never from your address;
 automatic checks start one by one rather than all at once, and *Careful checks* limit them to a few servers;
-links shared from the app are kept out of screenshots and marked sensitive on the clipboard, and sharing can ask
-for the screen lock; logs never contain keys or full subscription URLs, and the detailed log can hide server
+on Android shared links are kept out of screenshots and marked sensitive on the clipboard; sharing can request
+device-owner confirmation on either platform; logs never contain keys or full subscription URLs, and the detailed log can hide server
 addresses when shared; no local proxy is left open for other apps. The core and every build dependency are pinned
 by checksum.
 
 ## Install
 
+### Android
+
 Download the APK for your phone from [Releases](https://github.com/timofeykhodykin/borderless/releases) (almost
 always `arm64-v8a`), open it and allow installing from this source. Updates install over the previous version and
 keep all your data.
 
+### macOS
+
+Requires macOS 14 or later on an Apple silicon Mac. Download `borderless-4.0.0-macos-arm64.zip` from
+[Releases](https://github.com/timofeykhodykin/borderless/releases), extract it, and move `Border(less).app` to
+Applications. The build is signed ad hoc and is not notarized. If macOS prevents the first launch, use
+System Settings → Privacy & Security → Open Anyway for the app you downloaded
+([Apple’s instructions](https://support.apple.com/en-us/102445)).
+
+On first launch the app explains its system service before asking for an administrator password. The service
+owns the tunnel, routes and temporary DNS settings and keeps the connection running when the window closes.
+The app does not require an Apple account. Settings → About removes the service; its scripts also include a
+network reset for recovery. The app checks for another active tunnel before starting its own.
+
+Both platforms share server selection, parsers, routing configuration and statistics logic. Platform-specific
+features remain different: Android has per-app routing, Quick Settings and phone battery measurements; macOS has
+a menu bar panel and process energy measurements. App rules in imported zones do not apply on macOS; importing category subsets from Xray `.dat` files is currently
+available on Android.
+
+## Repository
+
+| Folder | What |
+|---|---|
+| `android/` | the Android app (Kotlin, Jetpack Compose) |
+| `macos/` | the macOS app and its system service (Swift, SwiftUI) |
+| `shared/` | common engine, data, networking and presentation logic (Kotlin Multiplatform) |
+| `native/` | Go code for both: `core` (Xray-core for macOS), `limited` (the WDTT core) |
+| `lists/` | the signed manifest of the routing lists the apps may install |
+| `docs/`, `scripts/` | screenshots, licenses, translation guide; helper scripts |
+
+Both apps use the same Kotlin Multiplatform engine and data logic, with native interfaces laid out for each platform.
+
 ## Build
 
-JDK 17 and the Android SDK (platform 37):
+### Android
+
+JDK 17 and the Android SDK (platform 37.1):
 
 ```sh
-./gradlew :app:assembleDebug        # app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
-./gradlew :app:testDebugUnitTest
+./gradlew :android:assembleDebug        # android/build/outputs/apk/debug/android-arm64-v8a-debug.apk
+./gradlew :android:testDebugUnitTest
 ```
 
 The core (`libv2ray.aar` from [AndroidLibXrayLite](https://github.com/2dust/AndroidLibXrayLite)) is downloaded on
-the first build and checked against the SHA-256 pinned in `app/build.gradle.kts`; Gradle checks every dependency
+the first build and checked against the SHA-256 pinned in `android/build.gradle.kts`; Gradle checks every dependency
 against `gradle/verification-metadata.xml`. A signed release build needs `keystore.properties` (`storeFile`,
 `keyAlias`) in the project root and the passwords there, in `BORDERLESS_STORE_PASSWORD` / `BORDERLESS_KEY_PASSWORD`
 or in the macOS Keychain (service `borderless-release`, accounts `store` / `key`). The routing lists are not part
-of the build: the app downloads them from the sources named in `app/src/main/assets/regions.json`, as approved in
+of the build: the app downloads them from the sources named in `android/src/main/assets/regions.json`, as approved in
 the signed [`lists/manifest.json`](lists/manifest.json).
+
+### macOS
+
+Apple silicon, macOS 14+, the Command Line Tools (no Xcode needed), and the pinned Go toolchain the Android build
+downloads (`./gradlew :android:downloadGo`):
+
+```sh
+macos/build.sh                          # macos/out/Border(less).app, signed ad hoc
+(cd macos && swift run Checks)          # unit checks
+```
+
+Xray-core is built from source (`native/core`, version and module hashes pinned in `go.mod` / `go.sum`). The app
+installs a small system service on first start — it asks first and explains why. The service owns the tunnel,
+routes and temporary DNS settings while the app can stay closed. The app and service are signed ad hoc; release
+archives and their checksums are also authenticated by the project's update-signing key.
 
 ## License
 

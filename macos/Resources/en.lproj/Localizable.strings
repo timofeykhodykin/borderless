@@ -1,0 +1,150 @@
+/* The page that explains the system service (shown before macOS asks for the password). */
+"setup.title" = "Border(less) needs a system service";
+"setup.title.update" = "The system service needs an update";
+"setup.lead" = "To pass the Mac's traffic through the tunnel, Border(less) installs a small service that runs in the background with administrator rights. macOS asks for your password once.";
+"setup.lead.update" = "This version of Border(less) comes with a new service. macOS asks for your password again to replace it.";
+"setup.why.title" = "Why a service";
+"setup.why.text" = "macOS gives an app its own tunnel only through a network extension, which Apple allows only to apps in its paid developer program. This research project isn't in it, so a system service makes the tunnel — and routes and DNS can be changed only with administrator rights.";
+"setup.does.title" = "What it does";
+"setup.does.text" = "Creates the tunnel, sends traffic and DNS into it and checks the servers, also with the window closed. When the connection ends or after a failure, it puts the network settings back.";
+"setup.doesnt.title" = "What it doesn't";
+"setup.doesnt.text" = "Opens no ports to the network or to other apps, takes commands only from this copy of Border(less), checked by its signature, and keeps its data in a folder only the system can read.";
+"setup.updates.title" = "Updates and removal";
+"setup.updates.text" = "Each new version of the app replaces the service and asks for the password again. Settings → Remove the service takes it away.";
+"setup.install" = "Install the service";
+"setup.update" = "Update the service";
+"setup.quit" = "Quit";
+"setup.note" = "macOS may then show that a background item was added.";
+"setup.waiting" = "Waiting for the service to start…";
+"setup.failed %@" = "The service wasn't installed: %@";
+"setup.not.answering" = "it was installed but doesn't answer.";
+
+"main.disconnect" = "Disconnect";
+"main.state.connected" = "Connected";
+"main.other.tunnel %@" = "Another tunnel is on (%@) — turn it off first.";
+"main.no.answer" = "The service didn't answer.";
+
+"nav.main" = "Main";
+"nav.demo" = "Demo data";
+"groups.pick" = "Choose a server or a subscription\nto see it here.";
+"menu.open" = "Open Border(less)";
+"menu.restore.network" = "Restore network settings";
+"menu.quit" = "Quit Border(less)";
+"menu.service.checking" = "Checking the service…";
+"menu.service.missing" = "The system service isn't installed";
+"menu.service.outdated" = "The system service needs an update";
+"menu.service.running" = "The service is running";
+
+/* Settings: where the Android text speaks of the phone. */
+"mac.avoid.insecure.sub" = "Servers whose traffic isn’t encrypted on the way or whose certificate isn’t checked take no part.";
+"mac.concurrency.auto.plain" = "Auto: adapts during scans to how fast this Mac answers. 0 = auto";
+"mac.eco.on.sub" = "Also the button under the connect button on the main screen";
+"mac.eco.saver" = "Together with Low Power Mode";
+"mac.eco.saver.sub" = "Turns on and off with it; you can still switch it yourself";
+"mac.eco.estimate.typical" = "Of the app's energy use, a typical estimate: there are not enough statistics of this Mac yet.";
+"mac.send.model" = "Tell providers the Mac model";
+"mac.send.model.sub" = "macOS version and model with each update; some providers list your devices by them";
+"mac.login" = "Open at login";
+"mac.login.sub" = "The connection comes back by itself after a restart if it was on";
+"mac.theme.system.sub" = "Light or dark together with the Mac's appearance";
+"mac.language.restart" = "Takes effect after the app is reopened";
+
+/* Statistics → App activity: the Mac measures energy instead of estimating radio and battery current. */
+"mac.act.energy" = "Energy use";
+"mac.act.energy.sub %@" = "measured by macOS · %@ of work";
+"mac.act.energy.total" = "Energy for the period";
+"mac.act.parts" = "Where the energy goes";
+"mac.act.parts.note" = "macOS measures the app and its core; the share of each action follows its CPU time.";
+"mac.act.chart.energy" = "App energy use over time";
+"mac.act.cond.display" = "Display off";
+"mac.act.cond.metered" = "Metered network";
+"mac.act.cond.lowpower" = "Low Power Mode";
+"mac.act.cond.battery" = "On battery";
+"mac.act.cond.note" = "With the display off, on a metered network and in Low Power Mode the app checks less often.";
+"mac.unit.mw" = "mW";
+"mac.w %@" = "%@ W";
+"mac.wh %@" = "%@ Wh";
+
+/* Routing: the Mac reads zone files and text lists; Xray .dat lists and sing-box rule sets come later. */
+"mac.zone.load.sub" = "A zone file or a list of sites and addresses (plain, hosts, Clash / Surge, AdBlock)";
+"mac.zone.apps.sub" = "The Mac has no per-app routing: the zone’s apps travel with it and can be edited on Android.";
+"mac.loading" = "Loading…";
+"mac.theme" = "Theme";
+"mac.theme.light" = "Light";
+"mac.theme.dark" = "Dark";
+"mac.theme.light.sub" = "The palette's light version";
+
+/* Adding servers: a dropped or picked file of links. */
+"mac.add.file_unreadable" = "The file can't be read or is too big to add.";
+
+/* Settings → About → System service: removing it and its confirm. */
+"mac.service" = "System service";
+"mac.service.remove" = "Remove the service";
+"mac.service.remove.sub" = "The tunnel and its checks stop; the app then asks to install it again";
+"mac.service.remove.button" = "Remove…";
+"mac.service.remove.q" = "Remove the system service?";
+"mac.service.remove.what" = "The tunnel and the background checks stop; Border(less) then asks to install it again, like on the first start.";
+"mac.service.remove.data" = "Its data — servers, settings, statistics — can be kept for a reinstall or removed with it.";
+"mac.service.remove.keep" = "Keep data";
+"mac.service.remove.with.data" = "With data";
+
+/* UI-audit fixes 2026-11-08 */
+"mac.soon" = "not on the Mac yet";
+"mac.err.refused" = "The service refused the change.";
+"mac.err.generic" = "Something went wrong on the service's side.";
+"mac.err.badreply" = "The service's answer couldn't be read.";
+"mac.p95" = "P95";
+"mac.server.original_name" = "Original name";
+"mac.countries.show_servers" = "Show servers";
+"mac.countries.hide_servers" = "Hide servers";
+"mac.routing.settings" = "Routing settings";
+"mac.detailed.empty" = "The detailed log is empty.";
+"mac.update.none" = "No subscriptions to update.";
+"mac.remove.working" = "Removing the service…";
+"mac.login.item" = "macOS refused to open the app at login.";
+"mac.range.days" = "Statistics go back %d days.";
+
+/* Second UI-audit batch: ServiceError mapping and the fixers' new texts. */
+"mac.add.decoding" = "Reading the image…";
+"mac.err.console" = "The service answers only the user logged in on this Mac.";
+"mac.err.crash_body" = "Last time the background service stopped because of an error. Copy the details and send them to the developer — it helps fix it.";
+"mac.err.crash_title" = "The background service stopped unexpectedly";
+"mac.err.entry.long" = "An entry in the zone is too long.";
+"mac.err.locked" = "The service keeps this setting itself; the change can't come from the app.";
+"mac.err.name.long" = "The name is too long.";
+"mac.err.nocore" = "The tunnel's core is missing — reinstall the service.";
+"mac.err.nonetwork" = "There's no network the tunnel could use.";
+"mac.err.notunnel" = "The tunnel is gone.";
+"mac.err.othertunnel" = "Another tunnel is on — turn it off first.";
+"mac.err.reply.big" = "The service's answer was too large to read.";
+"mac.err.report.body" = "**What happened**\n\n%1$@\n\n**Details**\n\nPaste them below: the app copied them to the clipboard (app version, macOS version, device, what the service was doing and the stack trace; secrets are hidden).";
+"mac.err.request" = "The service didn't understand the request.";
+"mac.err.request.big" = "The change was too large for the service.";
+"mac.err.unreadable" = "The service couldn't read the change.";
+"mac.err.zone.big" = "The zone is too big.";
+"mac.err.zone.entries" = "The zone has too many entries.";
+"mac.export.failed" = "Couldn't export the statistics:";
+"mac.export.working" = "Exporting…";
+"mac.export.zip" = "packing the archive failed";
+"mac.restore.admin" = "The service isn't answering, so the reset runs without it — macOS will ask for the administrator password.";
+"mac.restore.q" = "Restore the network settings?";
+"mac.script.error" = "Something went wrong while macOS ran the script:";
+"mac.set.eco.what" = "• the current server is checked 3× less often; a failure is still noticed at once\n• a faster server is looked for 3× less often, only with the display on and traffic flowing; a switch needs a bigger gain\n• a failover scan stops as soon as a server is chosen\n• among working servers, ones that cost less power are preferred if not much slower\n• hidden servers aren't explored; subscriptions update half as often\n• less logging and statistics writing";
+"mac.set.geo.days.sub" = "Only changed lists are downloaded. Half as often in battery saving. 0 = never";
+"mac.set.latency.sub" = "While traffic shows the server works. Less often while the display is asleep.";
+"mac.share.device" = "Pass this device's id";
+"mac.share.device.off" = "Off: the other device gets its own id. A password tied to one device then won't work there";
+"mac.share.device.on" = "To move the server to your other computer or phone. Two devices with one id at the same time push each other off";
+"mac.share.qr.failed" = "Couldn't draw the QR code — copy or send the text instead.";
+"mac.stats.retry" = "Try again";
+"mac.zone.share.sub" = "Someone else can load it as a zone (categories of .dat files stay on this Mac)";
+"mac.zone.share_failed" = "Couldn't write the zone file: %@";
+"mac.zone.sites.apps" = "Sites: %@ and others · its apps work without the tunnel";
+"main.turn.off" = "Turn off";
+
+/* Post-audit fix batch — APP-SETTINGS: live update rows, .dat detection, the unsectioned-zone ask. */
+"mac.auto.update.sub" = "New versions are downloaded and verified in the background; the install waits for your OK. Off: checked by hand here";
+"mac.update.downloading" = "Downloading…";
+"mac.update.ready" = "Downloaded and verified — install it now or it installs when the service next starts.";
+"mac.zone.dat" = "An Xray “.dat” list can't be loaded as a zone on the Mac yet.";
+"mac.zone.where" = "The file doesn’t say where its entries go — pick:";

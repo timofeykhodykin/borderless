@@ -30,21 +30,24 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"app.borderless/limited"
+	"app.borderless/limited/creds"
 )
 
 var (
-	peer       = flag.String("peer", "", "server address, host:port")
-	calls      = flag.String("calls", "", "call identifiers, comma-separated")
-	password   = flag.String("password", "", "server connection password")
-	deviceID   = flag.String("device-id", "", "server-side device id")
-	instance   = flag.String("instance", "", "stable per-server id passed to the credential provider")
+	peer       = flag.String("peer", "", "server address, host:port (or the LIMITED_PEER environment variable)")
+	calls      = flag.String("calls", "", "call identifiers, comma-separated (or LIMITED_CALLS)")
+	password   = flag.String("password", "", "server connection password (or LIMITED_PASSWORD)")
+	deviceID   = flag.String("device-id", "", "server-side device id (or LIMITED_DEVICE_ID)")
+	instance   = flag.String("instance", "", "stable per-server id passed to the credential provider (or LIMITED_INSTANCE)")
 	listenAddr = flag.String("listen", "127.0.0.1:0", "local address to carry UDP on")
 	media      = flag.String("media", "audio", "RTP media mode: audio or video")
 	maxStreams = flag.Int("n", 9, "upper bound of streams")
@@ -55,6 +58,10 @@ var (
 	verbose    = flag.Bool("verbose", false, "write the core's detailed log to stderr")
 	watch      = flag.Bool("watch-parent", true, "exit when the parent process is gone")
 	dns        = flag.String("dns", "", "resolvers to use, comma-separated IPs (the app passes the network's own)")
+	iface      = flag.String("iface", "", "bind every outbound socket to this interface (macOS: the tunnel takes all routes)")
+	uid        = flag.Int("uid", -1, "drop to this user id before anything else (required when started as root)")
+	gid        = flag.Int("gid", -1, "drop to this group id")
+	lifeline   = flag.Int("lifeline", -1, "fd whose end-of-file means the service is gone: stop")
 )
 
 // events writes the app protocol on stdout and the detailed log on stderr, and ends the run on a fatal error,
@@ -109,6 +116,7 @@ func (e *events) OnStats(activeN, wanted int, bytesUp, bytesDown int64) {
 		"wanted":     wanted,
 		"bytes_up":   bytesUp,
 		"bytes_down": bytesDown,
+		"cpu_ms":     cpuMillis(),
 	})
 }
 
@@ -134,6 +142,14 @@ func main() {
 		return
 	}
 	flag.Parse()
+	// Secrets may come from the environment instead of argv: on macOS any local user reads another
+	// process's command line (ps auxww), another account's environment not. A flag always wins over
+	// its variable, so passing both keeps working exactly as the flag alone did.
+	*peer = envDefault(*peer, "LIMITED_PEER")
+	*calls = envDefault(*calls, "LIMITED_CALLS")
+	*password = envDefault(*password, "LIMITED_PASSWORD")
+	*deviceID = envDefault(*deviceID, "LIMITED_DEVICE_ID")
+	*instance = envDefault(*instance, "LIMITED_INSTANCE")
 	if *peer == "" || *calls == "" {
 		fmt.Fprintln(os.Stderr, "limitedd: -peer and -calls are required")
 		os.Exit(2)
@@ -142,6 +158,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "limitedd: -password is required")
 		os.Exit(2)
 	}
+	if err := dropPrivileges(*uid, *gid); err != nil {
+		fmt.Fprintf(os.Stderr, "limitedd: privileges: %v\n", err)
+		os.Exit(2)
+	}
+	limited.BindInterface = *iface
+	creds.DialContext = limited.BoundDialContext
 	resolvers := dnsServers(*dns, hasResolvConf())
 	useDNS(resolvers)
 
@@ -174,6 +196,7 @@ func main() {
 	if *watch {
 		go watchParent(ev)
 	}
+	watchLifeline(*lifeline, ev)
 	<-ev.done
 	core.Stop()
 }
@@ -214,6 +237,15 @@ func arg(f []string, i int) string {
 	return ""
 }
 
+// envDefault is value, or the environment variable when the flag stayed empty: the caller chooses which
+// channel a secret travels by, and the environment is the one other local users cannot read.
+func envDefault(value, name string) string {
+	if value != "" {
+		return value
+	}
+	return os.Getenv(name)
+}
+
 // watchParent ends the core when the app's process is replaced or killed and stops reacting to stdin.
 func watchParent(ev *events) {
 	ppid := os.Getppid()
@@ -224,4 +256,55 @@ func watchParent(ev *events) {
 			return
 		}
 	}
+}
+
+// watchLifeline ends the run when the descriptor the service holds open for us closes — the service ended,
+// whatever the way (the same lifeline borderless-core gets as its fd 4).
+func watchLifeline(fd int, ev *events) {
+	if fd < 0 {
+		return
+	}
+	go func() {
+		f := os.NewFile(uintptr(fd), "lifeline")
+		_, _ = io.Copy(io.Discard, f)
+		ev.stop()
+	}()
+}
+
+// dropPrivileges switches to uid / gid for good: supplementary groups cleared, real, effective and saved ids
+// changed, and checked afterwards (setuid(0) must fail). As a user (development, Android) it changes nothing.
+// The same as native/core/cmd/borderless-core/main.go.
+func dropPrivileges(uid, gid int) error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	if uid <= 0 || gid <= 0 {
+		return fmt.Errorf("started as root without -uid / -gid")
+	}
+	if err := syscall.Setgroups([]int{gid}); err != nil {
+		return err
+	}
+	if err := syscall.Setgid(gid); err != nil {
+		return err
+	}
+	if err := syscall.Setuid(uid); err != nil {
+		return err
+	}
+	if os.Getuid() != uid || os.Geteuid() != uid || os.Getgid() != gid || os.Getegid() != gid {
+		return fmt.Errorf("ids did not change")
+	}
+	if syscall.Setuid(0) == nil {
+		return fmt.Errorf("could regain root")
+	}
+	return nil
+}
+
+// cpuMillis is the process's CPU time so far (user + system): the app adds its deltas to its own count — the
+// cores run outside its process, which is how Android's /proc read and the Mac's getrusage see them at all.
+func cpuMillis() int64 {
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		return 0
+	}
+	return ru.Utime.Nano()/1e6 + ru.Stime.Nano()/1e6
 }

@@ -11,8 +11,8 @@ import os
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RES = os.path.join(ROOT, "app", "src", "main", "res", "drawable-nodpi")
-KT = os.path.join(ROOT, "app", "src", "main", "java", "app", "borderless", "ui", "FlagAssets.kt")
+RES = os.path.join(ROOT, "android", "src", "main", "res", "drawable-nodpi")
+KT = os.path.join(ROOT, "android", "src", "main", "java", "app", "borderless", "ui", "FlagAssets.kt")
 WIDTH = 160
 
 

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- build.sh substitutes @VERSION@ and @ARCH@ -->
+<dict>
+	<key>CFBundleIdentifier</key><string>app.borderless.mac</string>
+	<key>CFBundleName</key><string>Border(less)</string>
+	<key>CFBundleDisplayName</key><string>Border(less)</string>
+	<key>CFBundleExecutable</key><string>Border(less)</string>
+	<key>CFBundlePackageType</key><string>APPL</string>
+	<key>CFBundleShortVersionString</key><string>@VERSION@</string>
+	<key>CFBundleVersion</key><string>@VERSION@</string>
+	<key>CFBundleDevelopmentRegion</key><string>en</string>
+	<key>CFBundleLocalizations</key><array><string>en</string><string>ru</string></array>
+	<key>LSMinimumSystemVersion</key><string>14.0</string>
+	<key>LSArchitecturePriority</key><array><string>@ARCH@</string></array>
+	<key>ATSApplicationFontsPath</key><string>Fonts</string>
+	<key>NSHighResolutionCapable</key><true/>
+	<key>CFBundleIconFile</key><string>AppIcon</string>
+	<key>NSCameraUsageDescription</key><string>The camera reads a QR code to add a server.</string>
+	<key>CFBundleURLTypes</key><array><dict>
+		<key>CFBundleURLName</key><string>app.borderless</string>
+		<key>CFBundleTypeRole</key><string>Editor</string>
+		<key>CFBundleURLSchemes</key><array><string>borderless</string><string>wdtt</string><string>qwdtt</string><string>vless</string><string>vmess</string><string>trojan</string><string>ss</string><string>hysteria2</string><string>hy2</string><string>wireguard</string></array>
+	</dict></array>
+</dict>
+</plist>

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"app.borderless/limited"
 )
 
 // Fallback resolvers, used only when the app passed none and the system has no resolv.conf.
@@ -49,8 +51,7 @@ func useDNS(servers []string) {
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			s := servers[int(next.Add(1)-1)%len(servers)]
-			d := net.Dialer{Timeout: 3 * time.Second}
-			return d.DialContext(ctx, network, s)
+			return limited.BoundDialer(3 * time.Second).DialContext(ctx, network, s)
 		},
 	}
 }

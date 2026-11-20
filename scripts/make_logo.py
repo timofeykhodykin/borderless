@@ -10,7 +10,7 @@ from fontTools.ttLib import TTFont
 from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.pens.transformPen import TransformPen
 root=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))+'/'
-d=re.search(r'pathData="([^"]+)"',open(root+'app/src/main/res/drawable/ic_launcher_foreground.xml').read()).group(1)
+d=re.search(r'pathData="([^"]+)"',open(root+'android/src/main/res/drawable/ic_launcher_foreground.xml').read()).group(1)
 x0,x1,y0,y1=-63.0,15380.0,0.0,9896.0  # bounds of the heron path (potrace units)
 H=112.0                     # heron height
 k=H/(y1-y0); W=k*(x1-x0)
@@ -25,8 +25,8 @@ def text_path(font_file, text, size, x, base):
     return ' '.join(out), x
 size=104; gap=30
 tx=W+gap; base=H*0.80
-bold,xe=text_path(root+'app/src/main/res/font/pt_serif_bold.ttf','Border',size,tx,base)
-ital,xe=text_path(root+'app/src/main/res/font/pt_serif_italic.ttf','(less)',size,xe+2,base)
+bold,xe=text_path(root+'android/src/main/res/font/pt_serif_bold.ttf','Border',size,tx,base)
+ital,xe=text_path(root+'android/src/main/res/font/pt_serif_italic.ttf','(less)',size,xe+2,base)
 total=xe+6
 for name,ink in (('logo.svg','#2B2422'),('logo-dark.svg','#F3EDEA')):
     svg=f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -8 {total:.0f} {H+30:.0f}" width="{total/1.6:.0f}" height="{(H+30)/1.6:.0f}" role="img" aria-label="Border(less)">

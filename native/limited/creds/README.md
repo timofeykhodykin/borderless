@@ -35,7 +35,7 @@ its internals; everything else about the core is in `..` and `local/native-core/
 ## Tests
 
 ```
-./gradlew :app:testLimited
+./gradlew :android:testLimited
 ```
 
 (`go vet` + `go test ./...` with the pinned Go; all of Go's caches stay in `.gradle/go` — never run a system `go`

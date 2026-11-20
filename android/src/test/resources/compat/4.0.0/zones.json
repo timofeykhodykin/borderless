@@ -1,0 +1,1 @@
+[{"id":"u-example","name":"Example","direct":["domain:a.example","10.1.0.0/16"],"server":["full:b.example"],"apps":["com.example.app"],"listSizes":{"ext:u-example-ab12.geosite.dat:XX":3}}]

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The hardened-runtime signature hides the camera without this: requestAccess answers
+	     "denied" no matter what NSCameraUsageDescription says. The app target only — the
+	     service, core and limited binaries open no capture devices. No sandbox: the app is
+	     deliberately unsandboxed (local/macos/PLAN.md). -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
+</dict>
+</plist>

@@ -1,0 +1,4 @@
+# The system's SQLite (macOS ships it; the statistics database on the Mac). Linked by the app / service as -lsqlite3.
+headers = sqlite3.h
+headerFilter = sqlite3.h
+linkerOpts = -lsqlite3

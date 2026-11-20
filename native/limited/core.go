@@ -267,7 +267,9 @@ func (c *Core) worker(wid int) {
 	}
 }
 
-// handleCredError applies the error's kind; returns false if the worker should stop.
+// handleCredError applies the error's kind; returns false if the worker should stop. Every handled failure
+// leaves a line in the detailed log — a server stuck on rate limiting or per-step transient errors would
+// otherwise show nothing between its start and the eventual READY or fatal outcome.
 func (c *Core) handleCredError(callID string, err error, backoff *time.Duration) bool {
 	if ce, ok := err.(*CredError); ok {
 		switch ce.Kind {
@@ -280,11 +282,16 @@ func (c *Core) handleCredError(callID string, err error, backoff *time.Duration)
 		case IdentifierDead:
 			c.deadIDs.Store(callID, true)
 			c.invalidate(callID)
+			c.logf("call identifier no longer usable (%s): %s", ce.Code, ce.Message)
 			return c.sleep(time.Second)
 		case RateLimited:
-			return c.sleep(wait(backoff, 2*time.Second, 30*time.Second))
+			d := wait(backoff, 2*time.Second, 30*time.Second)
+			c.logf("credentials %s: %s; retrying in %s", ce.Code, ce.Message, d)
+			return c.sleep(d)
 		default: // Transient
-			return c.sleep(wait(backoff, time.Second, 20*time.Second))
+			d := wait(backoff, time.Second, 20*time.Second)
+			c.logf("credentials %s: %s; retrying in %s", ce.Code, ce.Message, d)
+			return c.sleep(d)
 		}
 	}
 	if c.ctx.Err() != nil {

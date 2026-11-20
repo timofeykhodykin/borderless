@@ -1,0 +1,269 @@
+package app.borderless.data
+
+import app.borderless.core.Phase
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.sqrt
+
+/** Pure calculations over [StatsDb] rows (no Android), so they are unit-testable. */
+object StatsMath {
+
+    /** Phase rows are repeated this often while the tunnel runs (`StatsDb.HEARTBEAT_MS`). */
+    const val HEARTBEAT_MS = 5 * 60_000L
+
+    data class Segment(val start: Long, val end: Long, val phase: Phase, val server: String?)
+
+    /**
+     * Turns phase rows into time segments clipped to [from, to). A row lasts until the next row. Rows are
+     * re-written every heartbeat while the tunnel runs; if the next row comes from another process (or there is
+     * none), a silence longer than [HEARTBEAT_MS] × 1.5 means the process was gone and is not counted.
+     * Within one process a long silence is deep sleep (heartbeats come late) and counts in full.
+     */
+    fun segments(rows: List<PhaseRow>, from: Long, to: Long, now: Long): List<Segment> {
+        val cap = HEARTBEAT_MS * 3 / 2
+        val out = ArrayList<Segment>()
+        rows.forEachIndexed { i, r ->
+            if (r.phase == Phase.OFF) return@forEachIndexed
+            val nextRow = rows.getOrNull(i + 1)
+            val next = nextRow?.ts ?: now
+            val end = minOf(next, if (nextRow != null && sameProcess(r, nextRow)) next else r.ts + cap, to)
+            val start = maxOf(r.ts, from)
+            if (end > start) {
+                val last = out.lastOrNull()
+                // Merge heartbeat repeats of the same state into one segment.
+                if (last != null && last.phase == r.phase && last.server == r.server && last.end == start) out[out.lastIndex] = last.copy(end = end)
+                else out += Segment(start, end, r.phase, r.server)
+            }
+        }
+        return out
+    }
+
+    /**
+     * Whether [b] was written by the process that wrote [a]. Rows before v3 carry no process: a repeat of the same
+     * state is then taken as a heartbeat of the same process (a new process always starts with "searching").
+     */
+    private fun sameProcess(a: PhaseRow, b: PhaseRow): Boolean =
+        if (a.run != null && b.run != null) a.run == b.run
+        else a.run == null && b.run == null && a.phase != Phase.SEARCHING && a.phase == b.phase && a.server == b.server
+
+    fun durations(segments: List<Segment>): Map<Phase, Long> =
+        segments.groupBy { it.phase }.mapValues { (_, s) -> s.sumOf { it.end - it.start } }
+
+    /** What one server (or a subscription's servers together) was doing: carrying the traffic, answering, silent. */
+    enum class ServerState { IN_USE, ANSWERED, NO_REPLY }
+
+    data class StateSpan(val start: Long, val end: Long, val state: ServerState)
+
+    /** One [AVAIL_SLICE_MS] slice with checks of the servers: whether any of them answered in it. */
+    data class SliceCheck(val start: Long, val answered: Boolean)
+
+    /**
+     * The status strip of a server or a subscription over [from, to): in use where a CONNECTED segment went through
+     * one of [ids]; elsewhere the result of the checks — a checked slice holds until the next one, at most [holdMs]
+     * (checks are 10 min apart while connected, an hour or more in battery saving or with the tunnel off: past that
+     * the state is unknown and the strip stays empty). An answer in a slice wins over failures in it. A slice in use
+     * without a single answer shows as no reply (only the slice itself): the server was in use but not working.
+     */
+    fun serverStates(
+        segments: List<Segment>, ids: Set<String>, slices: List<SliceCheck>, from: Long, to: Long, holdMs: Long = 3 * AVAIL_SLICE_MS,
+    ): List<StateSpan> {
+        val used = merge(
+            segments.filter { it.phase == Phase.CONNECTED && it.server in ids }
+                .map { StateSpan(maxOf(it.start, from), minOf(it.end, to), ServerState.IN_USE) }.filter { it.end > it.start }.sortedBy { it.start }
+        )
+        val sorted = slices.sortedBy { it.start }
+        val checks = sorted.mapIndexedNotNull { i, c ->
+            val start = maxOf(c.start, from)
+            val end = minOf(sorted.getOrNull(i + 1)?.start ?: Long.MAX_VALUE, c.start + holdMs, to)
+            if (end > start) StateSpan(start, end, if (c.answered) ServerState.ANSWERED else ServerState.NO_REPLY) else null
+        }
+        val silentInUse = intersect(
+            sorted.filter { !it.answered }.map { StateSpan(maxOf(it.start, from), minOf(it.start + AVAIL_SLICE_MS, to), ServerState.NO_REPLY) }.filter { it.end > it.start },
+            used,
+        )
+        return overlay(overlay(checks, used), silentInUse)
+    }
+
+    /** [top] over [base] (each sorted and without overlaps): where both cover a moment, [top]'s state shows. */
+    private fun overlay(base: List<StateSpan>, top: List<StateSpan>): List<StateSpan> {
+        val out = ArrayList<StateSpan>(base.size + top.size)
+        var j = 0
+        for (b in base) {
+            var t = b.start
+            while (j < top.size && top[j].end <= t) j++
+            var k = j
+            while (k < top.size && top[k].start < b.end) {
+                if (top[k].start > t) out += StateSpan(t, top[k].start, b.state)
+                t = maxOf(t, top[k].end)
+                k++
+            }
+            if (t < b.end) out += StateSpan(t, b.end, b.state)
+        }
+        out += top
+        out.sortBy { it.start }
+        return merge(out)
+    }
+
+    /** The parts of [spans] inside [within] (each sorted and without overlaps), keeping their states. */
+    private fun intersect(spans: List<StateSpan>, within: List<StateSpan>): List<StateSpan> {
+        val out = ArrayList<StateSpan>()
+        var j = 0
+        for (x in spans) {
+            while (j < within.size && within[j].end <= x.start) j++
+            var k = j
+            while (k < within.size && within[k].start < x.end) {
+                val a = maxOf(x.start, within[k].start)
+                val b = minOf(x.end, within[k].end)
+                if (b > a) out += StateSpan(a, b, x.state)
+                k++
+            }
+        }
+        return out
+    }
+
+    /** Neighbours of the same state joined. */
+    private fun merge(spans: List<StateSpan>): List<StateSpan> {
+        val merged = ArrayList<StateSpan>(spans.size)
+        for (x in spans) {
+            val last = merged.lastOrNull()
+            if (last != null && last.state == x.state && last.end >= x.start) merged[merged.lastIndex] = last.copy(end = maxOf(last.end, x.end))
+            else merged += x
+        }
+        return merged
+    }
+
+    /** Time each server carried traffic (CONNECTED segments). */
+    fun usage(segments: List<Segment>): Map<String, Long> =
+        segments.filter { it.phase == Phase.CONNECTED && it.server != null }
+            .groupBy { it.server!! }.mapValues { (_, s) -> s.sumOf { it.end - it.start } }
+
+    data class Summary(
+        val count: Int,
+        val ok: Int,
+        val median: Int?,
+        val p95: Int?,
+        val min: Int?,
+        val max: Int?,
+        val mean: Int?,
+        /** Mean absolute difference between consecutive successful samples. */
+        val jitter: Int?,
+        /** Share answered by time ([availability]); [ok] / [count] are plain counts. */
+        val byTime: Double? = null,
+    ) {
+        val availability: Double? get() = byTime ?: if (count == 0) null else ok.toDouble() / count
+    }
+
+    fun summarize(samples: List<Sample>): Summary {
+        val values = samples.mapNotNull { it.ms }
+        val sorted = values.sorted()
+        val jitter = if (values.size < 2) null else values.zipWithNext { a, b -> abs(a - b) }.average().toInt()
+        return Summary(
+            count = samples.size,
+            ok = values.size,
+            median = percentile(sorted, 0.5),
+            p95 = percentile(sorted, 0.95),
+            min = sorted.firstOrNull(),
+            max = sorted.lastOrNull(),
+            mean = if (values.isEmpty()) null else values.average().toInt(),
+            jitter = jitter,
+            byTime = availability(samples),
+        )
+    }
+
+    /** Width of the time slices availability is measured in ([availability], and the same in StatsDb's queries). */
+    const val AVAIL_SLICE_MS = 10 * 60_000L
+
+    /**
+     * Share answered by time, not by count: checks are grouped into [AVAIL_SLICE_MS] slices and each slice counts once
+     * with its own share. While nothing works the app checks every few seconds; counted one by one, those bursts
+     * outweighed hours of quiet success (phone export of 2026-10-14: 12.6 % of scans vs 51–59 % of the time).
+     */
+    fun availability(samples: List<Sample>): Double? {
+        if (samples.isEmpty()) return null
+        val slices = samples.groupBy { it.ts / AVAIL_SLICE_MS }.values
+        return slices.sumOf { slice -> slice.count { it.ms != null }.toDouble() / slice.size } / slices.size
+    }
+
+    /** Servers available over a period: [share] answered, and the typical scan's [available] of [total]. */
+    data class ScanShare(val share: Double, val available: Double, val total: Double)
+
+    /**
+     * [ScanShare] of [scans] by time: each scan stands for the time until the next one (at most [capMs], so a long
+     * pause with the tunnel off doesn't let one scan decide); scans inside [skip] (no network: the phone's fault, not
+     * the servers') are left out. Counted per scan, the retries every 15–30 s while nothing answered dragged it down.
+     */
+    fun scanShare(scans: List<ScanRow>, skip: List<Segment>, end: Long, capMs: Long = 15 * 60_000L): ScanShare? {
+        val all = scans.sortedBy { it.ts }
+        var weight = 0.0
+        var share = 0.0
+        var available = 0.0
+        var total = 0.0
+        all.forEachIndexed { i, r ->
+            if (r.total <= 0 || skip.any { r.ts >= it.start && r.ts < it.end }) return@forEachIndexed
+            val w = ((all.getOrNull(i + 1)?.ts ?: end) - r.ts).coerceIn(1L, capMs).toDouble()
+            weight += w
+            share += w * r.available / r.total
+            available += w * r.available
+            total += w * r.total
+        }
+        return if (weight == 0.0) null else ScanShare(share / weight, available / weight, total / weight)
+    }
+
+    fun percentile(sorted: List<Int>, p: Double): Int? {
+        if (sorted.isEmpty()) return null
+        val idx = (ceil(p * sorted.size).toInt() - 1).coerceIn(0, sorted.lastIndex)
+        return sorted[idx]
+    }
+
+    fun stddev(values: List<Int>): Double? {
+        if (values.size < 2) return null
+        val m = values.average()
+        return sqrt(values.sumOf { (it - m) * (it - m) } / (values.size - 1))
+    }
+
+    /** A chart point: median latency of a time bucket, and how many samples in it failed. */
+    data class Point(val t: Long, val ms: Int?, val failed: Int, val total: Int)
+
+    /** Groups samples into [buckets] equal time slices; empty slices are omitted. */
+    fun bucket(samples: List<Sample>, from: Long, to: Long, buckets: Int): List<Point> {
+        if (samples.isEmpty() || to <= from) return emptyList()
+        val width = maxOf(1L, (to - from) / buckets)
+        return samples.groupBy { ((it.ts - from) / width).coerceIn(0, buckets.toLong() - 1) }
+            .entries.sortedBy { it.key }
+            .map { (b, list) ->
+                val ok = list.mapNotNull { it.ms }.sorted()
+                Point(from + b * width + width / 2, percentile(ok, 0.5), list.size - ok.size, list.size)
+            }
+    }
+
+    /** Latency histogram bucket edges used on the server screen. */
+    val histogramEdges = listOf(0, 50, 100, 200, 400, 800, 1600, Int.MAX_VALUE)
+
+    fun histogram(samples: List<Sample>): List<Int> {
+        val counts = IntArray(histogramEdges.size - 1)
+        samples.forEach { s ->
+            val ms = s.ms ?: return@forEach
+            val i = histogramEdges.indexOfLast { ms >= it }.coerceIn(0, counts.lastIndex)
+            counts[i]++
+        }
+        return counts.toList()
+    }
+
+    /**
+     * How good a server was: smoothed share of successful probes (time slices answered, see [availability]) × a speed factor
+     * (1 at 0 ms, ½ at 400 ms; no answers count as 2 s). Used for scan order and chart defaults.
+     */
+    fun score(count: Double, ok: Double, avgMs: Double?): Double =
+        (ok + 1.0) / (count + 2.0) / (1.0 + (avgMs ?: 2000.0) / 400.0)
+
+    /** Median of [values] (0 for none); the middle two averaged for an even count. */
+    fun median(values: List<Double>): Double {
+        if (values.isEmpty()) return 0.0
+        val v = values.sorted()
+        return if (v.size % 2 == 1) v[v.size / 2] else (v[v.size / 2 - 1] + v[v.size / 2]) / 2
+    }
+
+    /** Hours covered by power samples (gaps over 15 min are not joined: the app wasn't running). */
+    fun coveredHours(rows: List<StatsDb.PowerRow>): Double =
+        rows.zipWithNext().sumOf { (a, b) -> (b.ts - a.ts).takeIf { it in 1..15 * 60_000L } ?: 0L } / 3_600_000.0
+}

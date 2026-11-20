@@ -2,8 +2,8 @@
 .kotlin/
 build/
 /local.properties
-/app/libs/*.aar
-/app/release/
+/android/libs/*.aar
+/android/release/
 *.iml
 .idea/
 .DS_Store
@@ -16,3 +16,13 @@ __pycache__/
 # Local only: notes for the assistant and work in progress (never published)
 CLAUDE.md
 /local/
+
+# Mac build output
+/macos/.build/
+/macos/out/
+
+# Local audit agent instructions
+/.devin/
+
+# Native development executables
+/native/core/borderless-core

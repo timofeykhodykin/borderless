@@ -13,7 +13,7 @@ app-facing API (`Config`, `Events`, `Session`, `Start`), and the program the app
 Build: the app's Gradle task `buildLimited` (pinned Go, modules verified against `go.sum`). Tests:
 
 ```
-./gradlew :app:testLimited
+./gradlew :android:testLimited
 ```
 
 (`go vet` + `go test ./...` with the pinned Go; all of Go's caches stay in `.gradle/go` — never run a system `go`

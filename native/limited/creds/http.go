@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 	tlsclient "github.com/bogdanfinn/tls-client"
@@ -27,6 +28,11 @@ var defaultProfile = browserProfile{
 	SecChUaPlatform: `"Windows"`,
 }
 
+// DialContext, when set, opens the HTTP client's connections instead of the default dialer. The command gives it
+// limited.BoundDialContext on macOS, where an unbound socket would loop into our own tunnel (the core can't import
+// this package's caller, so the hook lives here).
+var DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+
 // apiClient wraps the HTTP client and a shared cookie jar.
 // Safe for concurrent use; one instance per Fetch is fine.
 type apiClient struct {
@@ -36,11 +42,15 @@ type apiClient struct {
 }
 
 func newAPIClient() (*apiClient, error) {
-	hc, err := tlsclient.NewHttpClient(tlsclient.NewNoopLogger(),
+	opts := []tlsclient.HttpClientOption{
 		tlsclient.WithTimeoutSeconds(20),
 		tlsclient.WithClientProfile(profiles.Chrome_146),
 		tlsclient.WithCookieJar(tlsclient.NewCookieJar()),
-	)
+	}
+	if DialContext != nil {
+		opts = append(opts, tlsclient.WithDialContext(DialContext))
+	}
+	hc, err := tlsclient.NewHttpClient(tlsclient.NewNoopLogger(), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("tls client: %w", err)
 	}

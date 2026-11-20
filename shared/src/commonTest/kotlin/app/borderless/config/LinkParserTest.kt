@@ -1,0 +1,349 @@
+package app.borderless.config
+
+import app.borderless.data.AppSettings
+import app.borderless.data.Regions
+import app.borderless.data.AppRules
+import app.borderless.data.Countries
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlin.test.Test
+
+class LinkParserTest {
+
+    private fun JsonObject.obj(k: String) = this[k]!!.jsonObject
+    private fun JsonObject.str(k: String) = this[k]!!.jsonPrimitive.content
+
+    @Test
+    fun vlessReality() {
+        val p = LinkParser.parse(
+            "vless://11111111-2222-3333-4444-555555555555@203.0.113.7:443?security=reality&encryption=none&pbk=PUBKEY_abc-123&headerType=&fp=chrome&spx=%2F&type=tcp&flow=xtls-rprx-vision&sni=www.example.com&sid=07d2a82ab62311e2#DE%20Germany%20%C2%B7%20test"
+        )
+        assertEquals("DE Germany · test", p.name)
+        assertEquals("VLESS · Reality", p.protocol)
+        val o = p.outbounds.first()
+        assertEquals("vless", o.str("protocol"))
+        assertEquals("xtls-rprx-vision", o.obj("settings").str("flow"))
+        val reality = o.obj("streamSettings").obj("realitySettings")
+        assertEquals("www.example.com", reality.str("serverName"))
+        assertEquals("PUBKEY_abc-123", reality.str("publicKey"))
+        assertEquals("/", reality.str("spiderX"))
+        assertEquals("DE", Countries.detect(p.name))
+    }
+
+    @Test
+    fun vlessXhttpTls() {
+        val p = LinkParser.parse(
+            "vless://11111111-2222-3333-4444-555555555555@example.org:443?mode=stream-up&path=%2Fassets%2Fabc&security=tls&alpn=h2%2Chttp%2F1.1&encryption=none&insecure=0&host=example.org&fp=chrome&type=xhttp&allowInsecure=0&sni=example.org#%F0%9F%87%A9%F0%9F%87%AA%20xhttp"
+        )
+        val ss = p.outbounds.first().obj("streamSettings")
+        assertEquals("xhttp", ss.str("network"))
+        assertEquals("stream-up", ss.obj("xhttpSettings").str("mode"))
+        assertEquals("/assets/abc", ss.obj("xhttpSettings").str("path"))
+        assertEquals(listOf("h2", "http/1.1"), ss.obj("tlsSettings")["alpn"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertNull(ss.obj("tlsSettings")["allowInsecure"])
+        assertEquals("DE", Countries.detect(p.name))
+    }
+
+    @Test
+    fun vlessGrpcAndHttpUpgrade() {
+        val grpc = LinkParser.parse("vless://id@example.org:443?security=tls&type=grpc&serviceName=svc1&sni=example.org#g")
+        assertEquals("svc1", grpc.outbounds.first().obj("streamSettings").obj("grpcSettings").str("serviceName"))
+        val hu = LinkParser.parse("vless://id@example.org:443?path=%2Fhu%2Fx&security=tls&type=httpupgrade&host=example.org#h")
+        assertEquals("/hu/x", hu.outbounds.first().obj("streamSettings").obj("httpupgradeSettings").str("path"))
+    }
+
+    @Test
+    fun trojanWs() {
+        val p = LinkParser.parse("trojan://pass_word@example.org:443?path=%2Fws%2Fx&security=tls&host=example.org&type=ws&sni=example.org#%F0%9F%87%B8%F0%9F%87%AA%20trojan")
+        val o = p.outbounds.first()
+        assertEquals("trojan", o.str("protocol"))
+        assertEquals("pass_word", o.obj("settings").str("password"))
+        assertEquals("/ws/x", o.obj("streamSettings").obj("wsSettings").str("path"))
+        assertEquals("SE", Countries.detect(p.name))
+    }
+
+    @Test
+    fun trojanDefaultsToTls() {
+        val o = LinkParser.parse("trojan://pw@example.org:443#x").outbounds.first()
+        assertEquals("tls", o.obj("streamSettings").str("security"))
+        assertEquals("example.org", o.obj("streamSettings").obj("tlsSettings").str("serverName"))
+    }
+
+    @Test
+    fun vmessBase64() {
+        val json = """{"v":"2","ps":"Нидерланды","add":"example.org","port":"8443","id":"uuid","aid":"0","scy":"auto","net":"ws","type":"none","host":"cdn.example.org","path":"/ray","tls":"tls","sni":""}"""
+        val p = LinkParser.parse("vmess://" + app.borderless.platform.base64Encode(json.encodeToByteArray()))
+        assertEquals("Нидерланды", p.name)
+        assertEquals(8443, p.port)
+        val ss = p.outbounds.first().obj("streamSettings")
+        assertEquals("cdn.example.org", ss.obj("tlsSettings").str("serverName"))
+        assertEquals("NL", Countries.detect(p.name))
+    }
+
+    @Test
+    fun shadowsocksVariants() {
+        val sip002 = LinkParser.parse("ss://" + app.borderless.platform.base64UrlEncode("chacha20-ietf-poly1305:secret".encodeToByteArray()) + "@1.2.3.4:8388#Tokyo")
+        assertEquals("chacha20-ietf-poly1305", sip002.outbounds.first().obj("settings").str("method"))
+        assertEquals("JP", Countries.detect(sip002.name))
+        val plain2022 = LinkParser.parse("ss://2022-blake3-aes-128-gcm:a2V5%2Bkey%3D@1.2.3.4:443#x")
+        assertEquals("a2V5+key=", plain2022.outbounds.first().obj("settings").str("password"))
+        val legacy = LinkParser.parse("ss://" + app.borderless.platform.base64Encode("aes-256-gcm:pw@5.6.7.8:9000".encodeToByteArray()) + "#legacy")
+        assertEquals("5.6.7.8", legacy.host)
+        assertEquals(9000, legacy.port)
+    }
+
+    @Test
+    fun hysteria2() {
+        val p = LinkParser.parse("hysteria2://auth%40x@example.org:443,20000-30000/?sni=real.example.org&obfs=salamander&obfs-password=ob&insecure=1#hy")
+        val o = p.outbounds.first()
+        assertEquals("hysteria", o.str("protocol"))
+        val ss = o.obj("streamSettings")
+        assertEquals("auth@x", ss.obj("hysteriaSettings").str("auth"))
+        assertEquals("real.example.org", ss.obj("tlsSettings").str("serverName"))
+        assertEquals("salamander", (ss.obj("finalmask")["udp"] as JsonArray).first().jsonObject.str("type"))
+        assertEquals("443,20000-30000", ss.obj("finalmask").obj("quicParams").obj("udpHop").str("ports"))
+    }
+
+    @Test
+    fun wireguard() {
+        val p = LinkParser.parse("wireguard://cHJpdmF0ZQ%3D%3D@162.159.192.1:2408?publickey=cHVibGlj&address=172.16.0.2%2F32%2C2606%3A4700%3A%3A1%2F128&reserved=1%2C2%2C3&mtu=1280#warp")
+        val s = p.outbounds.first().obj("settings")
+        assertEquals("cHJpdmF0ZQ==", s.str("secretKey"))
+        assertEquals(2, s["address"]!!.jsonArray.size)
+        assertEquals("162.159.192.1:2408", s["peers"]!!.jsonArray.first().jsonObject.str("endpoint"))
+    }
+
+    @Test
+    fun extractsFromBase64Subscription() {
+        val body = app.borderless.platform.base64Encode("vless://a@h:1?type=tcp#1\ntrojan://b@h:2#2\n".encodeToByteArray())
+        assertEquals(2, LinkParser.extractLinks(body).size)
+    }
+
+    @Test
+    fun jsonConfigWithChain() {
+        val cfg = """{"remarks":"chain","outbounds":[
+            {"tag":"main","protocol":"vless","settings":{"vnext":[{"address":"a.example","port":443,"users":[{"id":"x"}]}]},
+             "streamSettings":{"network":"tcp","security":"reality","sockopt":{"dialerProxy":"hop"}}},
+            {"tag":"hop","protocol":"shadowsocks","settings":{"servers":[{"address":"b.example","port":1,"method":"aes-128-gcm","password":"p"}]}},
+            {"tag":"direct","protocol":"freedom"}]}"""
+        val p = LinkParser.parse(LinkParser.extractLinks(cfg).single())
+        assertEquals("chain", p.name)
+        assertEquals(2, p.outbounds.size)
+        assertEquals("proxy", p.outbounds[0].str("tag"))
+        assertEquals("a.example", p.host)
+    }
+
+    @Test
+    fun unsupportedSchemes() {
+        val e = runCatching { LinkParser.parse("tuic://x@h:1#t") }.exceptionOrNull()
+        assertTrue(e is UnsupportedLinkException)
+    }
+
+    @Test
+    fun configRouting() {
+        val outbounds = LinkParser.parse("vless://id@1.2.3.4:443?type=tcp&security=reality&pbk=k#x").outbounds
+        val full = Json.parseToJsonElement(XrayConfig.build(XrayConfig.Mode.PROXY, outbounds, AppSettings())).jsonObject
+        val rules = full.obj("routing")["rules"]!!.jsonArray.map { it.jsonObject }
+        // Routing rules apply only to traffic from the TUN, so health checks always use the proxy.
+        assertTrue(rules.filter { it["domain"] != null }.all { it["inboundTag"]!!.jsonArray.first().jsonPrimitive.content == "tun" })
+        assertEquals("proxy", full["outbounds"]!!.jsonArray.first().jsonObject.str("tag"))
+        val direct = Json.parseToJsonElement(XrayConfig.build(XrayConfig.Mode.DIRECT, emptyList(), AppSettings())).jsonObject
+        assertEquals("direct", direct["outbounds"]!!.jsonArray.first().jsonObject.str("tag"))
+    }
+
+    /**
+     * SECURITY.md S3: no rule may send traffic to a resolver's address around the server unless it is the DNS module's
+     * query to a direct resolver; the remote resolver always goes through the server.
+     */
+    @Test
+    fun dnsRulesStayInTheTunnel() {
+        val outbounds = LinkParser.parse("vless://id@1.2.3.4:443?type=tcp&security=reality&pbk=k#x").outbounds
+        fun rules(s: AppSettings) = Json.parseToJsonElement(XrayConfig.build(XrayConfig.Mode.PROXY, outbounds, s)).jsonObject
+            .obj("routing")["rules"]!!.jsonArray.map { it.jsonObject }
+        fun ips(r: JsonObject) = r["ip"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+        fun inbound(r: JsonObject) = r["inboundTag"]?.jsonArray?.map { it.jsonPrimitive.content }.orEmpty()
+        val zone = Regions.all.first()
+        val zoneDnsIp = zone.dns.first().substringAfter("://").substringBefore('/').substringBefore(':')
+        val cases = listOf(
+            AppSettings.fresh().copy(regions = emptySet()),
+            AppSettings.fresh().copy(routingEnabled = false),
+            AppSettings.fresh().copy(routingMode = app.borderless.data.RoutingMode.LISTED_ONLY),
+            AppSettings.fresh().copy(directDns = "1.1.1.1"),
+            AppSettings.fresh(),
+        )
+        for (s in cases) {
+            val rs = rules(s)
+            // Every rule that names a resolver's address belongs to the DNS module.
+            for (r in rs) if (ips(r).any { it == "1.1.1.1" || it == "8.8.8.8" || it == zoneDnsIp }) {
+                assertEquals(listOf("dns-module"), inbound(r), "rule $r of $s")
+            }
+            // The remote resolver (1.1.1.1 by default) is never sent direct.
+            assertFalse(rs.any { it.str("outboundTag") == "direct" && "1.1.1.1" in ips(it) })
+            // The first rule naming the remote resolver sends it to the server.
+            rs.firstOrNull { "1.1.1.1" in ips(it) }?.let { assertEquals("proxy", it.str("outboundTag")) }
+        }
+    }
+
+    @Test
+    fun zonesRouting() {
+        val outbounds = LinkParser.parse("vless://id@1.2.3.4:443?type=tcp&security=reality&pbk=k#x").outbounds
+        fun rules(s: AppSettings) = Json.parseToJsonElement(XrayConfig.build(XrayConfig.Mode.PROXY, outbounds, s)).jsonObject
+            .obj("routing")["rules"]!!.jsonArray.map { it.jsonObject }
+        fun mentions(s: AppSettings, v: String) = rules(s).any { r -> listOf("domain", "ip").any { k -> r[k]?.jsonArray?.any { it.jsonPrimitive.content == v } == true } }
+        // Whatever zones regions.json has: a new install has them all on; with none, only private addresses go direct.
+        val zone = Regions.all.first()
+        assertEquals(Regions.all.map { it.code }.toSet(), AppSettings.fresh().regions)
+        val none = AppSettings.fresh().copy(regions = emptySet())
+        assertFalse(mentions(none, zone.directIps.first()))
+        assertTrue(mentions(none, "geosite:private"))
+        // A zone turned on brings its lists (direct sites and addresses, and the ones for the server).
+        val on = AppSettings.fresh().copy(regions = setOf(zone.code))
+        assertTrue(mentions(on, zone.directIps.first()))
+        assertTrue(mentions(on, zone.directDomains.first()))
+        assertTrue(mentions(on, zone.serverDomains.first()))
+        // Direct names are resolved by the zone's resolver, else a public one; the user's own wins.
+        assertEquals(zone.dns, XrayConfig.RegionRules(on).dns)
+        assertEquals("1.1.1.1", XrayConfig.RegionRules(none).dns.first())
+        assertEquals(listOf("9.9.9.9"), XrayConfig.RegionRules(on.copy(directDns = "9.9.9.9")).dns)
+        // Apps of the zone are recognised by the same file (whole names and fragments are stored hashed).
+        assertTrue(zone.apps.matches(zone.apps.prefixes.first() + "example"))
+        assertFalse(zone.apps.matches("org.example.unrelated"))
+        val pkg = "com.example.someapp"
+        assertTrue(AppRules(packages = setOf(Regions.hash(pkg))).matches(pkg))
+        assertTrue(AppRules(markers = listOf("7:" + Regions.hash("someapp"))).matches("org.other.someapp.lite"))
+        assertFalse(AppRules(markers = listOf("7:" + Regions.hash("someapp"))).matches("org.other.app"))
+    }
+
+
+    /** macOS: every socket of the core leaves by the physical interface; server names resolve directly, not via itself. */
+    @Test
+    fun macBindsOutboundsToTheInterface() {
+        val outbounds = LinkParser.parse("vless://11111111-2222-3333-4444-555555555555@srv.example.com:443?type=tcp&security=tls&sni=srv.example.com#x").outbounds
+        val s = AppSettings.fresh().copy(regions = emptySet())
+        val c = Json.parseToJsonElement(XrayConfig.build(XrayConfig.Mode.PROXY, outbounds, s, bindInterface = "en0")).jsonObject
+        val obs = c["outbounds"]!!.jsonArray.map { it.jsonObject }
+        fun sockopt(tag: String) = obs.single { it.str("tag") == tag }.obj("streamSettings").obj("sockopt")
+        assertEquals("en0", sockopt("proxy").str("interface"))
+        assertEquals("UseIPv4", sockopt("proxy").str("domainStrategy"))
+        assertEquals("en0", sockopt("direct").str("interface"))
+        assertFalse("streamSettings" in obs.single { it.str("tag") == "drop" })
+        // The server's name goes to the direct resolver first, and that resolver's queries leave directly.
+        val first = c.obj("dns")["servers"]!!.jsonArray[0].jsonObject
+        assertEquals("1.1.1.1", first.str("address"))
+        assertEquals("full:srv.example.com", first["domains"]!!.jsonArray[0].jsonPrimitive.content)
+        val rule = c.obj("routing")["rules"]!!.jsonArray[0].jsonObject
+        assertEquals("direct", rule.str("outboundTag"))
+        assertEquals("1.1.1.1", rule["ip"]!!.jsonArray[0].jsonPrimitive.content)
+        // Only its plain queries: the remote resolver (https://1.1.1.1 by default) still goes through the server.
+        assertEquals("53", rule.str("port"))
+        assertTrue(s.remoteDns.contains("1.1.1.1"))
+        // The Mac service's choice: the network's own resolver first, an HTTPS one after it, both direct.
+        val boot = Json.parseToJsonElement(XrayConfig.build(XrayConfig.Mode.PROXY, outbounds, s, bindInterface = "en0",
+            bootstrapDns = listOf("192.0.2.53", "https://1.0.0.1/dns-query"))).jsonObject
+        val bootServers = boot.obj("dns")["servers"]!!.jsonArray.take(2).map { it.jsonObject.str("address") }
+        assertEquals(listOf("192.0.2.53", "https://1.0.0.1/dns-query"), bootServers)
+        val bootRules = boot.obj("routing")["rules"]!!.jsonArray.take(2).map { it.jsonObject }
+        assertEquals(listOf("53", "443"), bootRules.map { it.str("port") })
+        assertEquals(listOf("192.0.2.53", "1.0.0.1"), bootRules.map { it["ip"]!!.jsonArray[0].jsonPrimitive.content })
+        // Android: no binding at all.
+        val android = Json.parseToJsonElement(XrayConfig.build(XrayConfig.Mode.PROXY, outbounds, s)).jsonObject
+        assertFalse(android.toString().contains("\"interface\""))
+        // Only interface names are accepted.
+        assertTrue(runCatching { XrayConfig.build(XrayConfig.Mode.PROXY, outbounds, s, bindInterface = "en0; rm") }.isFailure)
+    }
+
+    /** macOS: a probe's config (no DNS, routing or direct of its own) gets them, bound like the main one. */
+    @Test
+    fun macBindsProbeConfigs() {
+        val outbounds = LinkParser.parse("vless://11111111-2222-3333-4444-555555555555@srv.example.com:443?type=tcp&security=tls&sni=srv.example.com#x").outbounds
+        val s = AppSettings.fresh()
+        val c = Json.parseToJsonElement(XrayConfig.bound(XrayConfig.probe(outbounds, s), "en0", listOf("192.0.2.53"))).jsonObject
+        val obs = c["outbounds"]!!.jsonArray.map { it.jsonObject }
+        // The server stays first (the default route of core.Dial), and every outbound leaves by en0.
+        assertEquals("proxy", obs.first().str("tag"))
+        assertTrue(obs.all { it.obj("streamSettings").obj("sockopt").str("interface") == "en0" })
+        assertEquals("192.0.2.53", c.obj("dns")["servers"]!!.jsonArray[0].jsonObject.str("address"))
+        val rule = c.obj("routing")["rules"]!!.jsonArray[0].jsonObject
+        assertEquals("direct", rule.str("outboundTag"))
+        // A local proxy's config too: its SOCKS inbound stays, a direct outbound appears for the resolver.
+        val proxy = Json.parseToJsonElement(XrayConfig.bound(XrayConfig.localProxy(outbounds, s, 1080, "u", "p"), "en0", listOf("192.0.2.53"))).jsonObject
+        assertEquals("socks", proxy["inbounds"]!!.jsonArray[0].jsonObject.str("protocol"))
+        assertTrue(proxy["outbounds"]!!.jsonArray.any { it.jsonObject.str("tag") == "direct" })
+    }
+
+    /** "Directly first": the zones' TCP goes to the local dialer, its way back only to the server, UDP stays direct. */
+    @Test
+    fun directFirstRouting() {
+        val outbounds = LinkParser.parse("vless://id@1.2.3.4:443?type=tcp&security=reality&pbk=k#x").outbounds
+        val df = XrayConfig.DirectFirst(41000, "u", "p", 41001, "bu", "bp")
+        fun cfg(s: AppSettings, mode: XrayConfig.Mode = XrayConfig.Mode.PROXY) =
+            Json.parseToJsonElement(XrayConfig.build(mode, outbounds, s, directFirst = df)).jsonObject
+        fun rules(c: JsonObject) = c.obj("routing")["rules"]!!.jsonArray.map { it.jsonObject }
+        fun tags(c: JsonObject, key: String) = c[key]!!.jsonArray.map { it.jsonObject.str("tag") }
+        val zone = Regions.all.first()
+        val on = AppSettings.fresh().copy(regions = setOf(zone.code))
+        val c = cfg(on)
+        assertTrue("direct-first" in tags(c, "outbounds"))
+        assertTrue("direct-first-back" in tags(c, "inbounds"))
+        val rs = rules(c)
+        fun has(r: JsonObject, k: String, v: String) = r[k]?.jsonArray?.any { it.jsonPrimitive.content == v } == true
+        // The way back always ends at the server.
+        val back = rs.single { has(it, "inboundTag", "direct-first-back") }
+        assertEquals("proxy", back.str("outboundTag"))
+        // The zone's addresses: TCP to the dialer first, then the old direct rule for the rest.
+        val zoneIp = rs.filter { has(it, "ip", zone.directIps.first()) }
+        assertEquals(listOf("direct-first", "direct"), zoneIp.map { it.str("outboundTag") })
+        assertEquals("tcp", zoneIp.first().str("network"))
+        // The user's own "without the tunnel" stays plain direct.
+        val own = rules(cfg(on.copy(directDomains = listOf("example.ru")))).filter { has(it, "domain", "domain:example.ru") }
+        assertEquals(listOf("direct"), own.map { it.str("outboundTag") })
+        // A client that closed its side waits long enough for the dialer's direct try; 1 s as before without it.
+        fun downlinkOnly(c: JsonObject) = c.obj("policy").obj("levels").obj("8")["downlinkOnly"]!!.jsonPrimitive.content
+        assertEquals("6", downlinkOnly(c))
+        val dfUser = c["outbounds"]!!.jsonArray.map { it.jsonObject }.single { it.str("tag") == "direct-first" }
+            .obj("settings")["servers"]!!.jsonArray[0].jsonObject["users"]!!.jsonArray[0].jsonObject
+        assertEquals("8", dfUser["level"]!!.jsonPrimitive.content)
+        assertEquals("1", downlinkOnly(cfg(on.copy(routingEnabled = false))))
+        // Without routing, or without a server, nothing of it is there.
+        assertFalse("direct-first" in tags(cfg(on.copy(routingEnabled = false)), "outbounds"))
+        assertFalse("direct-first-back" in tags(cfg(on, XrayConfig.Mode.DIRECT), "inbounds"))
+        // Listed-only: every TCP not for the server goes to the dialer.
+        val listed = rules(cfg(on.copy(routingMode = app.borderless.data.RoutingMode.LISTED_ONLY)))
+        assertTrue(listed.any { it.str("outboundTag") == "direct-first" && it.str("network") == "tcp" && it["ip"] == null && it["domain"] == null })
+    }
+
+    @Test
+    fun countries() {
+        assertEquals("FR", Countries.detect("🇫🇷 Париж, Франция, Extra"))
+        assertEquals("DE", Countries.detect("Франкфурт-на-Майне"))
+        assertEquals("US", Countries.detect("New York 01"))
+        assertEquals("NL", Countries.detect("[NL] fast"))
+        assertNull(Countries.detect("m2eow"))
+        assertNull(Countries.detect("tg-1234567890 grpc"))
+    }
+
+    @Test
+    fun chainOutboundsCannotTakeOverAppTags() {
+        // A chain outbound tagged "direct" would otherwise replace the app's own direct outbound.
+        val json = """
+            {"outbounds":[
+              {"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"a.example","port":443,"users":[{"id":"u"}]}]},
+               "streamSettings":{"sockopt":{"dialerProxy":"direct"}}},
+              {"tag":"direct","protocol":"vless","settings":{"vnext":[{"address":"evil.example","port":443,"users":[{"id":"x"}]}]}}
+            ]}
+        """.trimIndent()
+        val outs = LinkParser.parse(json).outbounds
+        val tags = outs.map { it["tag"].toString().trim('"') }
+        assertTrue("direct" !in tags)
+        assertTrue(tags.first() == "proxy")
+        assertTrue(outs.first().toString().contains("chain-0"))
+    }
+}

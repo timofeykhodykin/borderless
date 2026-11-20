@@ -1,18 +1,18 @@
 [versions]
-agp = "9.4.1"
+agp = "9.5.2"
 kotlin = "2.4.21"
 coreKtx = "1.19.1"
 activity = "1.13.0"
-lifecycle = "2.11.0"
-composeBom = "2026.09.00"
+lifecycle = "2.11.1"
+composeBom = "2026.11.01"
 materialIcons = "1.7.8"
 coroutines = "1.11.0"
-serialization = "1.12.0"
+serialization = "1.13.0"
 junit = "4.13.2"
 reorderable = "3.1.0"
 zxing = "3.5.4"
 zxingEmbedded = "4.3.0"
-sqlcipher = "4.19.1"
+sqlcipher = "4.20.0"
 androidxSqlite = "2.7.1"
 
 [libraries]
@@ -28,7 +28,9 @@ androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling
 androidx-compose-material-icons = { module = "androidx.compose.material:material-icons-extended", version.ref = "materialIcons" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 junit = { module = "junit:junit", version.ref = "junit" }
+kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 reorderable = { module = "sh.calvin.reorderable:reorderable", version.ref = "reorderable" }
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 zxing-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxingEmbedded" }
@@ -39,3 +41,4 @@ androidx-sqlite = { module = "androidx.sqlite:sqlite", version.ref = "androidxSq
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
